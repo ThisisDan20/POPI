@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PO ↔ PI Local Tester</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="HUT_Logo_RGB.jpg" alt="Huhtamaki logo" class="logo" />
+        <div>
+          <h1>PO ↔ PI Local Tester</h1>
+          <p>Offline comparison with local-only processing</p>
+        </div>
+      </div>
+      <div class="pill">Local folder mode</div>
+    </header>
+
+    <section class="security-note">🔒 All processing is local in your browser. No data is sent externally.</section>
+
+    <main class="layout">
+      <section class="card">
+        <h2>1) Upload Test Files</h2>
+        <div class="upload-grid">
+          <div class="dropzone" id="poDropzone" role="button" tabindex="0" aria-label="PO upload dropzone">
+            <h3>PO Files</h3>
+            <p>Drag/drop or click. Supports CSV, XLS, XLSX, PDF</p>
+            <input type="file" id="poFile" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden />
+            <button type="button" id="poBrowse">Choose PO files</button>
+            <p class="file-list" id="poFileList">No files selected.</p>
+          </div>
+          <div class="dropzone" id="piDropzone" role="button" tabindex="0" aria-label="PI upload dropzone">
+            <h3>PI Files</h3>
+            <p>Drag/drop or click. Supports CSV, XLS, XLSX, PDF</p>
+            <input type="file" id="piFile" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden />
+            <button type="button" id="piBrowse">Choose PI files</button>
+            <p class="file-list" id="piFileList">No files selected.</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="runCompare" class="primary">Run Comparison (first PO + first PI)</button>
+          <button id="loadSample">Load sample data</button>
+        </div>
+        <p class="hint">Max 5MB/file recommended. Keep files local in this folder for testing.</p>
+      </section>
+
+      <section class="card split">
+        <div>
+          <h2>2) Match Summary</h2>
+          <table>
+            <thead><tr><th>Check</th><th>Status</th><th>Notes</th></tr></thead>
+            <tbody id="summaryBody">
+              <tr><td colspan="3" class="muted">Run comparison to populate results.</td></tr>
+            </tbody>
+          </table>
+
+          <h3 class="subheading">Mismatch Details (PO vs PI)</h3>
+          <table>
+            <thead>
+              <tr><th>Item</th><th>Field</th><th>PO</th><th>PI</th><th>Variance</th></tr>
+            </thead>
+            <tbody id="mismatchBody">
+              <tr><td colspan="5" class="muted">No mismatches yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <h2>3) Manual Review</h2>
+          <div class="checklist">
+            <label><input type="checkbox" id="manualOverride" /> Approve quantity variance override</label>
+            <label><input type="checkbox" id="confirmReview" /> Confirm manual checks completed</label>
+          </div>
+          <button id="finalize" class="primary">Finalize Result</button>
+          <p id="finalStatus" class="hint">Awaiting comparison.</p>
+        </div>
+      </section>
+
+      <section class="card split">
+        <div>
+          <h2>4) Signed PI Download</h2>
+          <p class="hint">Downloads a valid PDF with <code>-signed</code> suffix after pass/manual approval.</p>
+          <button id="downloadSignedPi" class="primary">Download Signed PI PDF</button>
+        </div>
+        <div>
+          <h2>Quick CSV Format Example</h2>
+<pre class="sample">item_code,qty,price_per_item
+WCFRKIW,100,1.24
+ABC001,300,0.95</pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
