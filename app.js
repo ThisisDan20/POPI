@@ -107,11 +107,19 @@ async function parseRowsFromFile(file) {
       item_code: normalizeItemCode(r.item_code),
     }));
 
-    if (!hasLikelyHeader(text) || isLowConfidencePdfRows(rows)) {
+    if (!rows.length) {
       return {
         rows: [],
         mode: 'pdf',
-        warning: 'PDF text was detected but confidence is low for structured rows. To avoid false mismatches, please use CSV export for this file or provide a text-based PDF with clear item/qty/price columns.',
+        warning: 'Could not parse structured rows from PDF. For scanned/image PDFs, please use CSV export.',
+      };
+    }
+
+    if (!hasLikelyHeader(text) || isLowConfidencePdfRows(rows)) {
+      return {
+        rows,
+        mode: 'pdf',
+        warning: 'PDF parsed with low confidence. Results are shown for review; please confirm mismatches manually.',
       };
     }
 
