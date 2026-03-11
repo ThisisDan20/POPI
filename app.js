@@ -419,12 +419,30 @@ document.getElementById('finalize').addEventListener('click', () => {
   }
 });
 
-document.getElementById('downloadSignedPi').addEventListener('click', () => {
+document.getElementById('downloadSignedPi').addEventListener('click', async () => {
   if (!compareState.passed) {
     finalStatus.textContent = 'Cannot download signed PI until checks pass or manual override is approved.';
     return;
   }
 
+  const a = document.createElement('a');
+  a.download = `${compareState.piFilenameBase}-signed.pdf`;
+
+  const sourcePi = piFiles[0];
+  if (sourcePi && sourcePi.name.toLowerCase().endsWith('.pdf')) {
+    // Use the actual uploaded PI PDF bytes so user gets the real document with signed suffix.
+    const originalBytes = await readArrayBuffer(sourcePi);
+    const blob = new Blob([originalBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+    finalStatus.textContent = `Signed PI downloaded from original PI content: ${a.download}. Uploaded PO/PI files were cleared from session.`;
+    clearLoadedFiles();
+    return;
+  }
+
+  // Fallback if PI source is not PDF.
   const lines = [
     'Signed Proforma Invoice',
     `File: ${compareState.piFilenameBase}`,
@@ -435,9 +453,7 @@ document.getElementById('downloadSignedPi').addEventListener('click', () => {
   const pdfBytes = buildSimplePdfBytes(lines);
   const blob = new Blob([pdfBytes], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   a.href = url;
-  a.download = `${compareState.piFilenameBase}-signed.pdf`;
   a.click();
   URL.revokeObjectURL(url);
   finalStatus.textContent = `Signed PDF downloaded: ${a.download}. Uploaded PO/PI files were cleared from session.`;
