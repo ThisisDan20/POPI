@@ -15,6 +15,12 @@ const summaryBody = document.getElementById('summaryBody');
 const mismatchBody = document.getElementById('mismatchBody');
 const finalStatus = document.getElementById('finalStatus');
 
+function getSelectedFile(kind) {
+  const tracked = kind === 'po' ? poFiles : piFiles;
+  const input = kind === 'po' ? poFileInput : piFileInput;
+  return tracked[0] || input?.files?.[0] || null;
+}
+
 let poFiles = [];
 let piFiles = [];
 let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-result', poCore: null, piCore: null };
@@ -184,6 +190,15 @@ function quantitiesComparable(po, pi) {
 }
 
 async function parseRowsFromFile(file) {
+  if (!file) {
+    return {
+      rows: [],
+      mode: 'missing',
+      warning: 'No file selected. Please choose a PO/PI file first.',
+      coreFields: { poNo: null, paymentTerms: null, totalCost: null },
+    };
+  }
+
   const name = file.name.toLowerCase();
 
   if (name.endsWith('.pdf')) {
@@ -277,9 +292,11 @@ function setSelectedFiles(kind, files) {
   const cleanFiles = Array.from(files || []);
   if (kind === 'po') {
     poFiles = cleanFiles;
+    window.__poFiles = poFiles;
     poFileList.textContent = poFiles.length ? poFiles.map(f => f.name).join(', ') : 'No files selected.';
   } else {
     piFiles = cleanFiles;
+    window.__piFiles = piFiles;
     piFileList.textContent = piFiles.length ? piFiles.map(f => f.name).join(', ') : 'No files selected.';
   }
 }
@@ -359,6 +376,10 @@ function buildSimplePdfBytes(lines) {
 
 function readArrayBuffer(file) {
   return new Promise((resolve, reject) => {
+    if (!(file instanceof Blob)) {
+      reject(new Error('No valid file blob available for reading.'));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
@@ -368,6 +389,16 @@ function readArrayBuffer(file) {
 
 setupDropzone('po', poDropzone, poFileInput, poBrowse);
 setupDropzone('pi', piDropzone, piFileInput, piBrowse);
+
+window.debugParseCurrentFiles = async () => {
+  const po = getSelectedFile('po');
+  const pi = getSelectedFile('pi');
+  const poParsed = await parseRowsFromFile(po);
+  const piParsed = await parseRowsFromFile(pi);
+  console.log('PO parsed:', poParsed);
+  console.log('PI parsed:', piParsed);
+  return { poParsed, piParsed };
+};
 
 document.getElementById('loadSample').addEventListener('click', () => {
   const poRows = SAMPLE_PO_ROWS;
@@ -386,8 +417,8 @@ document.getElementById('loadSample').addEventListener('click', () => {
 });
 
 document.getElementById('runCompare').addEventListener('click', async () => {
-  const poFile = poFiles[0];
-  const piFile = piFiles[0];
+  const poFile = getSelectedFile('po');
+  const piFile = getSelectedFile('pi');
   if (!poFile || !piFile) {
     finalStatus.textContent = 'Please upload at least one PO and one PI file.';
     return;
