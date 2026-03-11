@@ -22,12 +22,8 @@ let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-resu
 const SAMPLE_PO = `item_code,qty,price_per_item\nWCFRKIW,100,1.24\nABC001,300,0.95`;
 const SAMPLE_PI = `item_code,qty,price_per_item\nWCFRKIW,200,1.39\nABC001,300,0.95`;
 
-
 function normalizeItemCode(value) {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_-]/g, '');
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
 }
 
 function parseCsv(text) {
@@ -47,86 +43,104 @@ function parseCsv(text) {
 }
 
 function extractTextFromPdfBytes(arrayBuffer) {
-  // Heuristic text extraction for text-based PDFs (not scanned/image PDFs).
+  // Conservative text extraction: keep likely human-readable chunks and remove PDF internals.
   const bytes = new Uint8Array(arrayBuffer);
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  const textChunks = [];
-  const matches = binary.match(/\((?:\\.|[^\\)])*\)/g) || [];
-  for (const m of matches) {
-    const cleaned = m.slice(1, -1).replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\n/g, '\n').replace(/\\r/g, '');
-    if (cleaned.trim()) textChunks.push(cleaned);
-  }
-  return textChunks.join('\n');
+
+  const rawChunks = binary.match(/\((?:\\.|[^\\)])*\)/g) || [];
+  const internals = /^(TYPE|FONT|TOUNICODE|CONTENTS|CROPBOX|MEDIABOX|PARENT|RESOURCES|IMAGE\d*|REGISTRY|ORDERING|FONTBBOX|FONTFILE\d*|STEMV)$/i;
+
+  const cleaned = rawChunks
+    .map(chunk => chunk.slice(1, -1)
+      .replace(/\\\(/g, '(')
+      .replace(/\\\)/g, ')')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '')
+      .trim())
+    .filter(Boolean)
+    .filter(chunk => chunk.length >= 3)
+    .filter(chunk => !internals.test(chunk))
+    .filter(chunk => {
+      // Keep chunks that look like business text, not random 3-char blobs.
+      const hasLetters = /[A-Za-z]/.test(chunk);
+      const hasWord = /\s/.test(chunk) || /\d/.test(chunk);
+      const tooNoisy = /^[^A-Za-z0-9]+$/.test(chunk);
+      return hasLetters && hasWord && !tooNoisy;
+    });
+
+  return cleaned.join('\n');
+}
+
+function extractCoreFields(text) {
+  const t = text || '';
+  const poNo = t.match(/\b(?:PO\s*(?:#|NO\.?|NUMBER)\s*[:\-]?\s*)([A-Z0-9\-\/]+)/i)?.[1] || null;
+  const paymentTerms = t.match(/\b(?:PAYMENT\s*TERMS?|TERMS)\s*[:\-]?\s*([^\n]{2,50})/i)?.[1]?.trim() || null;
+  const totalCost = t.match(/\b(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE)\s*[:\-]?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i)?.[1] || null;
+  return { poNo, paymentTerms, totalCost };
 }
 
 function parseRowsFromPdfText(text) {
-  // Try CSV-like lines first.
-  const csvLike = parseCsv(text);
-  if (csvLike.length) return csvLike;
-
-  // Fallback regex for lines like: ITEMCODE ... qty ... price
-  const rows = [];
+  // Strict parser: only accept lines that look like row data with item + qty + price.
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const hasTableHints = lines.some(l => /item|part/i.test(l)) && lines.some(l => /qty|quantity/i.test(l)) && lines.some(l => /price|rate/i.test(l));
+  if (!hasTableHints) return [];
+
+  const rows = [];
+  const rowPattern = /^([A-Z0-9][A-Z0-9\-_]{3,})\s+.+?\s+([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)/i;
+
   for (const line of lines) {
-    const m = line.match(/([A-Z0-9_-]{3,})\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/i);
-    if (m) {
-      rows.push({ item_code: m[1], qty: Number(m[2]), price_per_item: Number(m[3]) });
-    }
+    const m = line.match(rowPattern);
+    if (!m) continue;
+
+    const item = normalizeItemCode(m[1]);
+    const qty = Number(m[2]);
+    const price = Number(m[3]);
+
+    if (!item || item.length < 4) continue;
+    if (!/[A-Z]/.test(item) || !/\d/.test(item)) continue; // avoid random text tokens
+    if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
+
+    rows.push({ item_code: item, qty, price_per_item: price });
   }
-  return rows.filter(r => Number.isFinite(r.qty) && Number.isFinite(r.price_per_item));
-}
 
-function hasLikelyHeader(text) {
-  const t = text.toLowerCase();
-  return t.includes('item') && (t.includes('qty') || t.includes('quantity')) && t.includes('price');
-}
-
-function isLowConfidencePdfRows(rows) {
-  if (!rows.length) return true;
-  const shortCount = rows.filter(r => (r.item_code || '').length < 5).length;
-  const mixedCaseCount = rows.filter(r => /[a-z]/.test(r.item_code || '')).length;
-  const unique = new Set(rows.map(r => r.item_code)).size;
-  const invalidNums = rows.filter(r => !Number.isFinite(r.qty) || !Number.isFinite(r.price_per_item)).length;
-  const shortRatio = shortCount / rows.length;
-  const mixedRatio = mixedCaseCount / rows.length;
-  return invalidNums > 0 || unique < Math.max(1, rows.length * 0.4) || shortRatio > 0.6 || mixedRatio > 0.5;
+  return rows;
 }
 
 async function parseRowsFromFile(file) {
   const name = file.name.toLowerCase();
+
   if (name.endsWith('.csv')) {
     const text = await readTextFile(file);
-    return { rows: parseCsv(text), mode: 'csv', warning: null };
+    const rows = parseCsv(text);
+    const coreFields = extractCoreFields(text);
+    return { rows, mode: 'csv', warning: null, coreFields };
   }
+
   if (name.endsWith('.pdf')) {
     const buffer = await readArrayBuffer(file);
     const text = extractTextFromPdfBytes(buffer);
-    const rows = parseRowsFromPdfText(text).map(r => ({
-      ...r,
-      item_code: normalizeItemCode(r.item_code),
-    }));
+    const rows = parseRowsFromPdfText(text);
+    const coreFields = extractCoreFields(text);
 
     if (!rows.length) {
       return {
         rows: [],
         mode: 'pdf',
-        warning: 'Could not parse structured rows from PDF. For scanned/image PDFs, please use CSV export.',
+        warning: 'Could not reliably extract line rows from this PDF. Please use CSV export for comparison.',
+        coreFields,
       };
     }
 
-    if (!hasLikelyHeader(text) || isLowConfidencePdfRows(rows)) {
-      return {
-        rows,
-        mode: 'pdf',
-        warning: 'PDF parsed with low confidence. Results are shown for review; please confirm mismatches manually.',
-      };
-    }
-
-    return { rows, mode: 'pdf', warning: 'PDF parsed using text heuristics (text PDF only).' };
+    return {
+      rows,
+      mode: 'pdf',
+      warning: 'PDF parsed in strict mode (core-field + row pattern checks). Please review results.',
+      coreFields,
+    };
   }
 
-  return { rows: [], mode: 'unsupported', warning: `Unsupported file type for parsing: ${file.name}` };
+  return { rows: [], mode: 'unsupported', warning: `Unsupported file type for parsing: ${file.name}`, coreFields: { poNo: null, paymentTerms: null, totalCost: null } };
 }
 
 function pctDiff(a, b) {
@@ -166,11 +180,9 @@ function compare(poRows, piRows) {
       needsManual = true;
     }
 
-    const poPrice = po.price_per_item;
-    const piPrice = pi.price_per_item;
-    if (poPrice !== piPrice) {
-      const pVar = pctDiff(poPrice, piPrice);
-      mismatches.push({ item: po.item_code, field: 'Price per item', po: poPrice, pi: piPrice, variance: `${pVar.toFixed(1)}%` });
+    if (po.price_per_item !== pi.price_per_item) {
+      const pVar = pctDiff(po.price_per_item, pi.price_per_item);
+      mismatches.push({ item: po.item_code, field: 'Price per item', po: po.price_per_item, pi: pi.price_per_item, variance: `${pVar.toFixed(1)}%` });
     }
   });
 
@@ -190,9 +202,7 @@ function setSelectedFiles(kind, files) {
 
 function setupDropzone(kind, dropzoneEl, inputEl, browseEl) {
   browseEl.addEventListener('click', () => inputEl.click());
-  dropzoneEl.addEventListener('click', (e) => {
-    if (e.target.tagName !== 'BUTTON') inputEl.click();
-  });
+  dropzoneEl.addEventListener('click', (e) => { if (e.target.tagName !== 'BUTTON') inputEl.click(); });
   dropzoneEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -291,8 +301,8 @@ document.getElementById('loadSample').addEventListener('click', () => {
   compareState = { ...result, piFilenameBase: 'PI-sample' };
 
   renderSummary([
-    { check: 'PO file parsed', status: 'PASS', className: 'pass', note: `${poRows.length} line(s)` },
-    { check: 'PI file parsed', status: 'PASS', className: 'pass', note: `${piRows.length} line(s)` },
+    { check: 'PO required fields', status: 'PASS', className: 'pass', note: 'item_code, qty, price_per_item present (sample)' },
+    { check: 'PI required fields', status: 'PASS', className: 'pass', note: 'item_code, qty, price_per_item present (sample)' },
     { check: 'Qty tolerance (5%)', status: result.needsManual ? 'MANUAL' : 'PASS', className: result.needsManual ? 'fail' : 'pass', note: result.needsManual ? 'Variance above tolerance found' : 'Within tolerance' },
     { check: 'Overall', status: result.passed ? 'PASS' : 'REVIEW', className: result.passed ? 'pass' : 'warn', note: result.passed ? 'Auto-sign ready' : 'Manual check required' },
   ]);
@@ -311,6 +321,12 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   const [poParsed, piParsed] = await Promise.all([parseRowsFromFile(poFile), parseRowsFromFile(piFile)]);
 
   if (!poParsed.rows.length || !piParsed.rows.length) {
+    renderMismatches([]);
+    renderSummary([
+      { check: 'PO required fields', status: poParsed.rows.length ? 'PASS' : 'FAIL', className: poParsed.rows.length ? 'pass' : 'fail', note: poParsed.rows.length ? 'Line rows extracted' : (poParsed.warning || 'Missing required fields') },
+      { check: 'PI required fields', status: piParsed.rows.length ? 'PASS' : 'FAIL', className: piParsed.rows.length ? 'pass' : 'fail', note: piParsed.rows.length ? 'Line rows extracted' : (piParsed.warning || 'Missing required fields') },
+      { check: 'Overall', status: 'BLOCKED', className: 'fail', note: 'Comparison blocked until required core fields can be extracted from both files.' },
+    ]);
     finalStatus.textContent = [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'Could not parse uploaded files.';
     return;
   }
@@ -321,16 +337,28 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     piFilenameBase: (piFile.name || 'PI').replace(/\.(csv|pdf|xls|xlsx)$/i, ''),
   };
 
+  const poCore = poParsed.coreFields || {};
+  const piCore = piParsed.coreFields || {};
+  const coreNotes = [];
+  if (poCore.poNo && piCore.poNo) coreNotes.push(`PO#: ${poCore.poNo} vs ${piCore.poNo}`);
+  if (poCore.paymentTerms || piCore.paymentTerms) coreNotes.push(`Terms: ${poCore.paymentTerms || 'n/a'} vs ${piCore.paymentTerms || 'n/a'}`);
+  if (poCore.totalCost || piCore.totalCost) coreNotes.push(`Totals: ${poCore.totalCost || 'n/a'} vs ${piCore.totalCost || 'n/a'}`);
+
   renderSummary([
-    { check: 'PO file parsed', status: 'PASS', className: 'pass', note: `${poParsed.rows.length} line(s) from ${poFile.name} [${poParsed.mode}]` },
-    { check: 'PI file parsed', status: 'PASS', className: 'pass', note: `${piParsed.rows.length} line(s) from ${piFile.name} [${piParsed.mode}]` },
+    { check: 'PO required fields', status: 'PASS', className: 'pass', note: `${poParsed.rows.length} line(s) from ${poFile.name} [${poParsed.mode}]` },
+    { check: 'PI required fields', status: 'PASS', className: 'pass', note: `${piParsed.rows.length} line(s) from ${piFile.name} [${piParsed.mode}]` },
+    { check: 'Core header checks', status: coreNotes.length ? 'INFO' : 'WARN', className: coreNotes.length ? 'pass' : 'warn', note: coreNotes.join(' | ') || 'PO#/terms/total not confidently extracted from one or both files.' },
     { check: 'Qty tolerance (5%)', status: result.needsManual ? 'MANUAL' : 'PASS', className: result.needsManual ? 'fail' : 'pass', note: result.needsManual ? 'Variance above tolerance found' : 'Within tolerance' },
     { check: 'Overall', status: result.passed ? 'PASS' : 'REVIEW', className: result.passed ? 'pass' : 'warn', note: result.passed ? 'Auto-sign ready' : 'Manual check required' },
     { check: 'Parser notes', status: (poParsed.warning || piParsed.warning) ? 'INFO' : 'PASS', className: (poParsed.warning || piParsed.warning) ? 'warn' : 'pass', note: [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'No parser warnings.' },
   ]);
 
-  renderMismatches(result.mismatches);
-  finalStatus.textContent = `Comparison complete (using first files in each list). PO files: ${poFiles.length}, PI files: ${piFiles.length}.`;
+  renderMismatches(result.mismatches.slice(0, 200));
+  if (result.mismatches.length > 200) {
+    finalStatus.textContent = `Comparison complete. Showing first 200 mismatches out of ${result.mismatches.length}. Please verify source extraction.`;
+  } else {
+    finalStatus.textContent = `Comparison complete (using first files in each list). PO files: ${poFiles.length}, PI files: ${piFiles.length}.`;
+  }
 });
 
 document.getElementById('finalize').addEventListener('click', () => {
