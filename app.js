@@ -35,7 +35,57 @@ function parseCsv(text) {
       qty: Number(obj.qty),
       price_per_item: Number(obj.price_per_item),
     };
-  }).filter(r => r.item_code);
+  }).filter(r => r.item_code && Number.isFinite(r.qty) && Number.isFinite(r.price_per_item));
+}
+
+function extractTextFromPdfBytes(arrayBuffer) {
+  // Heuristic text extraction for text-based PDFs (not scanned/image PDFs).
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const textChunks = [];
+  const matches = binary.match(/\((?:\\.|[^\\)])*\)/g) || [];
+  for (const m of matches) {
+    const cleaned = m.slice(1, -1).replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\n/g, '\n').replace(/\\r/g, '');
+    if (cleaned.trim()) textChunks.push(cleaned);
+  }
+  return textChunks.join('\n');
+}
+
+function parseRowsFromPdfText(text) {
+  // Try CSV-like lines first.
+  const csvLike = parseCsv(text);
+  if (csvLike.length) return csvLike;
+
+  // Fallback regex for lines like: ITEMCODE ... qty ... price
+  const rows = [];
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const m = line.match(/([A-Z0-9_-]{3,})\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/i);
+    if (m) {
+      rows.push({ item_code: m[1], qty: Number(m[2]), price_per_item: Number(m[3]) });
+    }
+  }
+  return rows.filter(r => Number.isFinite(r.qty) && Number.isFinite(r.price_per_item));
+}
+
+async function parseRowsFromFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.csv')) {
+    const text = await readTextFile(file);
+    return { rows: parseCsv(text), mode: 'csv', warning: null };
+  }
+  if (name.endsWith('.pdf')) {
+    const buffer = await readArrayBuffer(file);
+    const text = extractTextFromPdfBytes(buffer);
+    const rows = parseRowsFromPdfText(text);
+    const warning = rows.length
+      ? 'PDF parsed using text heuristics (best for text PDFs).'
+      : 'Could not parse structured rows from PDF. This is common for scanned/image PDFs; use CSV export for now.';
+    return { rows, mode: 'pdf', warning };
+  }
+
+  return { rows: [], mode: 'unsupported', warning: `Unsupported file type for parsing: ${file.name}` };
 }
 
 function pctDiff(a, b) {
@@ -126,9 +176,7 @@ function setupDropzone(kind, dropzoneEl, inputEl, browseEl) {
 
   dropzoneEl.addEventListener('drop', (e) => {
     const files = e.dataTransfer?.files;
-    if (files?.length) {
-      setSelectedFiles(kind, files);
-    }
+    if (files?.length) setSelectedFiles(kind, files);
   });
 }
 
@@ -165,12 +213,21 @@ function buildSimplePdfBytes(lines) {
   return new TextEncoder().encode(pdf);
 }
 
-async function readFile(file) {
+function readTextFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
     reader.readAsText(file);
+  });
+}
+
+function readArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
   });
 }
 
@@ -200,26 +257,26 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     finalStatus.textContent = 'Please upload at least one PO and one PI file.';
     return;
   }
-  if (!poFile.name.toLowerCase().endsWith('.csv') || !piFile.name.toLowerCase().endsWith('.csv')) {
-    finalStatus.textContent = 'Current compare engine supports CSV parsing for now. Please choose CSV for both files.';
+
+  const [poParsed, piParsed] = await Promise.all([parseRowsFromFile(poFile), parseRowsFromFile(piFile)]);
+
+  if (!poParsed.rows.length || !piParsed.rows.length) {
+    finalStatus.textContent = [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'Could not parse uploaded files.';
     return;
   }
 
-  const [poText, piText] = await Promise.all([readFile(poFile), readFile(piFile)]);
-  const poRows = parseCsv(poText);
-  const piRows = parseCsv(piText);
-  const result = compare(poRows, piRows);
-
+  const result = compare(poParsed.rows, piParsed.rows);
   compareState = {
     ...result,
-    piFilenameBase: (piFile.name || 'PI').replace(/\.csv$/i, '').replace(/\.pdf$/i, ''),
+    piFilenameBase: (piFile.name || 'PI').replace(/\.(csv|pdf|xls|xlsx)$/i, ''),
   };
 
   renderSummary([
-    { check: 'PO file parsed', status: 'PASS', className: 'pass', note: `${poRows.length} line(s) from ${poFile.name}` },
-    { check: 'PI file parsed', status: 'PASS', className: 'pass', note: `${piRows.length} line(s) from ${piFile.name}` },
+    { check: 'PO file parsed', status: 'PASS', className: 'pass', note: `${poParsed.rows.length} line(s) from ${poFile.name} [${poParsed.mode}]` },
+    { check: 'PI file parsed', status: 'PASS', className: 'pass', note: `${piParsed.rows.length} line(s) from ${piFile.name} [${piParsed.mode}]` },
     { check: 'Qty tolerance (5%)', status: result.needsManual ? 'MANUAL' : 'PASS', className: result.needsManual ? 'fail' : 'pass', note: result.needsManual ? 'Variance above tolerance found' : 'Within tolerance' },
     { check: 'Overall', status: result.passed ? 'PASS' : 'REVIEW', className: result.passed ? 'pass' : 'warn', note: result.passed ? 'Auto-sign ready' : 'Manual check required' },
+    { check: 'Parser notes', status: (poParsed.warning || piParsed.warning) ? 'INFO' : 'PASS', className: (poParsed.warning || piParsed.warning) ? 'warn' : 'pass', note: [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'No parser warnings.' },
   ]);
 
   renderMismatches(result.mismatches);
@@ -250,7 +307,7 @@ document.getElementById('downloadSignedPi').addEventListener('click', () => {
   const lines = [
     'Signed Proforma Invoice',
     `File: ${compareState.piFilenameBase}`,
-    `Status: Approved`,
+    'Status: Approved',
     `Signed On: ${new Date().toISOString()}`,
     'Signature Type: Typed confirmation',
   ];
