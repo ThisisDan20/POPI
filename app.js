@@ -104,43 +104,53 @@ function parseRowsFromPdfText(text) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return [];
 
-  const itemCodeMatch = normalized.match(/\b([A-Z]{1,5}-[A-Z0-9]{2,8})\b/);
-  if (!itemCodeMatch) return [];
+  const rows = [];
 
-  // Currency/amount patterns (e.g., 11,012.40)
-  const amountMatches = [...normalized.matchAll(/\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2}))/g)]
-    .map(m => Number(m[1].replace(/,/g, '')))
-    .filter(n => Number.isFinite(n) && n > 1);
+  // 1) Label-based extraction (best for your PO/PI formats).
+  const labelItem = normalized.match(/(?:ITEM\s*NO\.?|PARTNUM|PART\s*NO\.?|ITEM\s*CODE)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{2,20})/i);
+  const labelQty = normalized.match(/(?:ORDER\s*QTY\.?|QUANTITY\s*CTNS?|QUANTITY|QTY)\s*[:\-]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i);
+  const labelPrice = normalized.match(/(?:UNIT\s*PRICE|PRICE\s*\/\s*CTN|PRICE)\s*(?:USD)?\s*[:\-]?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*\/\s*1000)?/i);
+  const labelTotal = normalized.match(/(?:EXT\s*PRICE|AMOUNT|TOTAL\s*AMOUNT|LINE\s*TOTAL)\s*[:\-]?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)/i);
 
-  // Quantity patterns (allow large EA qty and smaller CTN qty)
-  const qtyMatches = [...normalized.matchAll(/\b([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(EA|EACH|PCS|CTN|CTNS|CARTON|CARTONS)?\b/gi)]
-    .map(m => ({ qty: Number(m[1].replace(/,/g, '')), uom: (m[2] || '').toUpperCase() }))
-    .filter(x => Number.isFinite(x.qty) && x.qty > 0);
+  if (labelItem && (labelQty || labelTotal)) {
+    rows.push({
+      item_code: normalizeItemCode(labelItem[1]),
+      qty: labelQty ? Number(labelQty[1].replace(/,/g, '')) : null,
+      qty_uom: /CTN|CARTON/i.test(normalized) ? 'CTN' : (/\bEA\b|EACH|PCS/i.test(normalized) ? 'EA' : 'UNK'),
+      price_per_item: labelPrice ? Number(labelPrice[1].replace(/,/g, '')) : null,
+      line_total: labelTotal ? Number(labelTotal[1].replace(/,/g, '')) : null,
+    });
+  }
 
-  // Price patterns (including /1000 basis)
-  const pricePerThousand = normalized.match(/\b([0-9]+(?:\.[0-9]+)?)\s*\/\s*1000\b/i);
-  const pricePerCtn = normalized.match(/(?:PRICE\s*\/\s*CTN|UNIT\s*PRICE|PRICE)\s*(?:USD)?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
+  // 2) Generic fallback pattern.
+  if (!rows.length) {
+    const itemCodeMatch = normalized.match(/\b([A-Z]{1,8}[\-]?[A-Z0-9]{2,20})\b/);
+    const amountMatches = [...normalized.matchAll(/\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2}))/g)]
+      .map(m => Number(m[1].replace(/,/g, '')))
+      .filter(n => Number.isFinite(n) && n > 1);
+    const qtyMatches = [...normalized.matchAll(/\b([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(EA|EACH|PCS|CTN|CTNS|CARTON|CARTONS)?\b/gi)]
+      .map(m => ({ qty: Number(m[1].replace(/,/g, '')), uom: (m[2] || '').toUpperCase() }))
+      .filter(x => Number.isFinite(x.qty) && x.qty > 0);
+    const pricePerThousand = normalized.match(/\b([0-9]+(?:\.[0-9]+)?)\s*\/\s*1000\b/i);
+    const pricePerCtn = normalized.match(/(?:PRICE\s*\/\s*CTN|UNIT\s*PRICE|PRICE)\s*(?:USD)?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
 
-  const lineTotal = amountMatches.length ? Math.max(...amountMatches) : null;
+    const qtyTagged = qtyMatches.find(x => x.uom && ['CTN', 'CTNS', 'CARTON', 'CARTONS', 'EA', 'EACH', 'PCS'].includes(x.uom));
+    const qtyFallback = qtyMatches.find(x => x.qty >= 1 && x.qty <= 10000000);
+    const qtyObj = qtyTagged || qtyFallback;
 
-  // Choose quantity: prefer explicit CTN/EA tags, else nearest meaningful number
-  const qtyTagged = qtyMatches.find(x => x.uom && ['CTN', 'CTNS', 'CARTON', 'CARTONS', 'EA', 'EACH', 'PCS'].includes(x.uom));
-  const qtyFallback = qtyMatches.find(x => x.qty >= 1 && x.qty <= 10000000);
-  const qtyObj = qtyTagged || qtyFallback;
+    if (itemCodeMatch && (qtyObj || amountMatches.length)) {
+      rows.push({
+        item_code: normalizeItemCode(itemCodeMatch[1]),
+        qty: qtyObj ? qtyObj.qty : null,
+        qty_uom: qtyObj ? (qtyObj.uom || 'UNK') : 'UNK',
+        price_per_item: pricePerCtn ? Number(pricePerCtn[1]) : (pricePerThousand ? Number(pricePerThousand[1]) : null),
+        price_basis: pricePerThousand ? 'PER_1000' : (pricePerCtn ? 'PER_CTN' : 'UNKNOWN'),
+        line_total: amountMatches.length ? Math.max(...amountMatches) : null,
+      });
+    }
+  }
 
-  const row = {
-    item_code: normalizeItemCode(itemCodeMatch[1]),
-    qty: qtyObj ? qtyObj.qty : null,
-    qty_uom: qtyObj ? (qtyObj.uom || 'UNK') : 'UNK',
-    price_per_item: pricePerCtn ? Number(pricePerCtn[1]) : (pricePerThousand ? Number(pricePerThousand[1]) : null),
-    price_basis: pricePerThousand ? 'PER_1000' : (pricePerCtn ? 'PER_CTN' : 'UNKNOWN'),
-    line_total: lineTotal,
-  };
-
-  if (!row.item_code) return [];
-  if (!Number.isFinite(row.qty) && !Number.isFinite(row.line_total)) return [];
-
-  return [row];
+  return rows.filter(r => r.item_code && (Number.isFinite(r.qty) || Number.isFinite(r.line_total)));
 }
 
 function normalizeRowForCompare(row) {
@@ -182,19 +192,12 @@ async function parseRowsFromFile(file) {
     const rows = parseRowsFromPdfText(text);
     const coreFields = extractCoreFields(text);
 
-    if (!rows.length) {
-      return {
-        rows: [],
-        mode: 'pdf',
-        warning: 'Could not extract the required core line fields (item code, qty, price/line total) from this PDF.',
-        coreFields,
-      };
-    }
-
     return {
       rows,
       mode: 'pdf',
-      warning: 'PDF parsed in strict mode (core-field + row pattern checks). Please review results.',
+      warning: rows.length
+        ? 'PDF parsed using business-field heuristics. Please review results.'
+        : 'No line rows extracted from PDF; running header/core-field checks only.',
       coreFields,
     };
   }
@@ -394,12 +397,25 @@ document.getElementById('runCompare').addEventListener('click', async () => {
 
   if (!poParsed.rows.length || !piParsed.rows.length) {
     renderMismatches([]);
+    const poCore = poParsed.coreFields || {};
+    const piCore = piParsed.coreFields || {};
+    const poMatch = poCore.poNo && piCore.poNo && poCore.poNo === piCore.poNo;
+    const totalsMatch = poCore.totalCost && piCore.totalCost && Math.abs(Number(String(poCore.totalCost).replace(/,/g,'')) - Number(String(piCore.totalCost).replace(/,/g,''))) < 1;
+    compareState = {
+      passed: Boolean(poMatch),
+      needsManual: !poMatch,
+      piFilenameBase: (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, ''),
+      poCore,
+      piCore,
+    };
     renderSummary([
-      { check: 'PO required fields', status: poParsed.rows.length ? 'PASS' : 'FAIL', className: poParsed.rows.length ? 'pass' : 'fail', note: poParsed.rows.length ? 'Line rows extracted' : (poParsed.warning || 'Missing required fields') },
-      { check: 'PI required fields', status: piParsed.rows.length ? 'PASS' : 'FAIL', className: piParsed.rows.length ? 'pass' : 'fail', note: piParsed.rows.length ? 'Line rows extracted' : (piParsed.warning || 'Missing required fields') },
-      { check: 'Overall', status: 'BLOCKED', className: 'fail', note: 'Comparison blocked until required core fields can be extracted from both files.' },
+      { check: 'PO required core fields', status: poCore.poNo || poCore.totalCost ? 'PASS' : 'WARN', className: poCore.poNo || poCore.totalCost ? 'pass' : 'warn', note: poParsed.warning || 'Core fields partially extracted' },
+      { check: 'PI required core fields', status: piCore.poNo || piCore.totalCost ? 'PASS' : 'WARN', className: piCore.poNo || piCore.totalCost ? 'pass' : 'warn', note: piParsed.warning || 'Core fields partially extracted' },
+      { check: 'PO Number match', status: poMatch ? 'PASS' : 'MANUAL', className: poMatch ? 'pass' : 'warn', note: `${poCore.poNo || 'n/a'} vs ${piCore.poNo || 'n/a'}` },
+      { check: 'Total match', status: totalsMatch ? 'PASS' : 'INFO', className: totalsMatch ? 'pass' : 'warn', note: `${poCore.totalCost || 'n/a'} vs ${piCore.totalCost || 'n/a'}` },
+      { check: 'Overall', status: poMatch ? 'PASS' : 'REVIEW', className: poMatch ? 'pass' : 'warn', note: poMatch ? 'Core fields matched. You can proceed to sign.' : 'Core fields need manual confirmation.' },
     ]);
-    finalStatus.textContent = [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'Could not parse uploaded files.';
+    finalStatus.textContent = [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'Core-field-only comparison complete.';
     return;
   }
 
