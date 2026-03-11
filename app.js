@@ -71,30 +71,77 @@ function extractCoreFields(text) {
 }
 
 function parseRowsFromPdfText(text) {
-  // Strict parser: only accept lines that look like row data with item + qty + price.
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const hasTableHints = lines.some(l => /item|part/i.test(l)) && lines.some(l => /qty|quantity/i.test(l)) && lines.some(l => /price|rate/i.test(l));
-  if (!hasTableHints) return [];
+  // Targeted PDF row extraction for business docs with selectable text.
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
 
-  const rows = [];
-  const rowPattern = /^([A-Z0-9][A-Z0-9\-_]{3,})\s+.+?\s+([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)/i;
+  const itemCodeMatch = normalized.match(/\b([A-Z]{1,5}-[A-Z0-9]{2,8})\b/);
+  if (!itemCodeMatch) return [];
 
-  for (const line of lines) {
-    const m = line.match(rowPattern);
-    if (!m) continue;
+  // Currency/amount patterns (e.g., 11,012.40)
+  const amountMatches = [...normalized.matchAll(/\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2}))/g)]
+    .map(m => Number(m[1].replace(/,/g, '')))
+    .filter(n => Number.isFinite(n) && n > 1);
 
-    const item = normalizeItemCode(m[1]);
-    const qty = Number(m[2]);
-    const price = Number(m[3]);
+  // Quantity patterns (allow large EA qty and smaller CTN qty)
+  const qtyMatches = [...normalized.matchAll(/\b([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(EA|EACH|PCS|CTN|CTNS|CARTON|CARTONS)?\b/gi)]
+    .map(m => ({ qty: Number(m[1].replace(/,/g, '')), uom: (m[2] || '').toUpperCase() }))
+    .filter(x => Number.isFinite(x.qty) && x.qty > 0);
 
-    if (!item || item.length < 4) continue;
-    if (!/[A-Z]/.test(item) || !/\d/.test(item)) continue; // avoid random text tokens
-    if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
+  // Price patterns (including /1000 basis)
+  const pricePerThousand = normalized.match(/\b([0-9]+(?:\.[0-9]+)?)\s*\/\s*1000\b/i);
+  const pricePerCtn = normalized.match(/(?:PRICE\s*\/\s*CTN|UNIT\s*PRICE|PRICE)\s*(?:USD)?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
 
-    rows.push({ item_code: item, qty, price_per_item: price });
+  const lineTotal = amountMatches.length ? Math.max(...amountMatches) : null;
+
+  // Choose quantity: prefer explicit CTN/EA tags, else nearest meaningful number
+  const qtyTagged = qtyMatches.find(x => x.uom && ['CTN', 'CTNS', 'CARTON', 'CARTONS', 'EA', 'EACH', 'PCS'].includes(x.uom));
+  const qtyFallback = qtyMatches.find(x => x.qty >= 1 && x.qty <= 10000000);
+  const qtyObj = qtyTagged || qtyFallback;
+
+  const row = {
+    item_code: normalizeItemCode(itemCodeMatch[1]),
+    qty: qtyObj ? qtyObj.qty : null,
+    qty_uom: qtyObj ? (qtyObj.uom || 'UNK') : 'UNK',
+    price_per_item: pricePerCtn ? Number(pricePerCtn[1]) : (pricePerThousand ? Number(pricePerThousand[1]) : null),
+    price_basis: pricePerThousand ? 'PER_1000' : (pricePerCtn ? 'PER_CTN' : 'UNKNOWN'),
+    line_total: lineTotal,
+  };
+
+  if (!row.item_code) return [];
+  if (!Number.isFinite(row.qty) && !Number.isFinite(row.line_total)) return [];
+
+  return [row];
+}
+
+function normalizeRowForCompare(row) {
+  const copy = { ...row };
+  copy.item_code = normalizeItemCode(copy.item_code);
+  copy.qty = Number(copy.qty);
+  copy.price_per_item = Number(copy.price_per_item);
+  copy.line_total = Number(copy.line_total);
+  return copy;
+}
+
+function quantitiesComparable(po, pi) {
+  if (!Number.isFinite(po.qty) || !Number.isFinite(pi.qty)) return { comparable: false, variance: null, note: 'Qty unavailable' };
+
+  // Direct compare first
+  const directVar = pctDiff(po.qty, pi.qty);
+  if (Math.abs(directVar) <= 5) return { comparable: true, variance: directVar, note: 'Direct qty match' };
+
+  // UOM bridge: PO often in each/per-1000, PI in CTN.
+  const poLarge = po.qty >= 10000;
+  const piSmall = pi.qty <= 5000;
+  if (poLarge && piSmall) {
+    const inferredPerCtn = po.qty / pi.qty;
+    const rounded = Math.round(inferredPerCtn);
+    if (rounded > 0) {
+      return { comparable: true, variance: 0, note: `Qty bridged via inferred ${rounded} each/ctn` };
+    }
   }
 
-  return rows;
+  return { comparable: false, variance: directVar, note: 'Qty mismatch' };
 }
 
 async function parseRowsFromFile(file) {
@@ -110,7 +157,7 @@ async function parseRowsFromFile(file) {
       return {
         rows: [],
         mode: 'pdf',
-        warning: 'Could not reliably extract line rows from this PDF. Please upload a text-based PDF (not scanned image) for now.',
+        warning: 'Could not extract the required core line fields (item code, qty, price/line total) from this PDF.',
         coreFields,
       };
     }
@@ -154,11 +201,13 @@ function renderMismatches(rows) {
 }
 
 function compare(poRows, piRows) {
-  const piByItem = Object.fromEntries(piRows.map(r => [normalizeItemCode(r.item_code), r]));
+  const poNorm = poRows.map(normalizeRowForCompare);
+  const piNorm = piRows.map(normalizeRowForCompare);
+  const piByItem = Object.fromEntries(piNorm.map(r => [normalizeItemCode(r.item_code), r]));
   const mismatches = [];
   let needsManual = false;
 
-  poRows.forEach(po => {
+  poNorm.forEach(po => {
     const pi = piByItem[normalizeItemCode(po.item_code)];
     if (!pi) {
       mismatches.push({ item: po.item_code, field: 'Missing on PI', po: 'Exists', pi: 'Missing', variance: 'N/A' });
@@ -166,15 +215,26 @@ function compare(poRows, piRows) {
       return;
     }
 
-    const qtyVar = pctDiff(po.qty, pi.qty);
-    if (Math.abs(qtyVar) > 5) {
-      mismatches.push({ item: po.item_code, field: 'Qty', po: po.qty, pi: pi.qty, variance: `${qtyVar.toFixed(1)}%` });
+    // Line total is strongest cross-format check.
+    if (Number.isFinite(po.line_total) && Number.isFinite(pi.line_total)) {
+      const totalVar = pctDiff(po.line_total, pi.line_total);
+      if (Math.abs(totalVar) > 1) {
+        mismatches.push({ item: po.item_code, field: 'Line total', po: po.line_total.toFixed(2), pi: pi.line_total.toFixed(2), variance: `${totalVar.toFixed(1)}%` });
+        needsManual = true;
+      }
+    }
+
+    const qtyCheck = quantitiesComparable(po, pi);
+    if (!qtyCheck.comparable && qtyCheck.variance !== null && Math.abs(qtyCheck.variance) > 5) {
+      mismatches.push({ item: po.item_code, field: 'Qty', po: po.qty, pi: pi.qty, variance: `${qtyCheck.variance.toFixed(1)}%` });
       needsManual = true;
     }
 
-    if (po.price_per_item !== pi.price_per_item) {
+    if (Number.isFinite(po.price_per_item) && Number.isFinite(pi.price_per_item)) {
       const pVar = pctDiff(po.price_per_item, pi.price_per_item);
-      mismatches.push({ item: po.item_code, field: 'Price per item', po: po.price_per_item, pi: pi.price_per_item, variance: `${pVar.toFixed(1)}%` });
+      if (Math.abs(pVar) > 5) {
+        mismatches.push({ item: po.item_code, field: 'Price per item', po: po.price_per_item, pi: pi.price_per_item, variance: `${pVar.toFixed(1)}%` });
+      }
     }
   });
 
