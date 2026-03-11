@@ -26,15 +26,15 @@
         <div class="upload-grid">
           <div class="dropzone" id="poDropzone" role="button" tabindex="0" aria-label="PO upload dropzone">
             <h3>PO Files</h3>
-            <p>Drag/drop or click. Supports CSV, XLS, XLSX, PDF</p>
-            <input type="file" id="poFile" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden />
+            <p>Drag/drop or click. Supports PDF, PNG, JPG, JPEG</p>
+            <input type="file" id="poFile" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple hidden />
             <button type="button" id="poBrowse">Choose PO files</button>
             <p class="file-list" id="poFileList">No files selected.</p>
           </div>
           <div class="dropzone" id="piDropzone" role="button" tabindex="0" aria-label="PI upload dropzone">
             <h3>PI Files</h3>
-            <p>Drag/drop or click. Supports CSV, XLS, XLSX, PDF</p>
-            <input type="file" id="piFile" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden />
+            <p>Drag/drop or click. Supports PDF, PNG, JPG, JPEG</p>
+            <input type="file" id="piFile" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple hidden />
             <button type="button" id="piBrowse">Choose PI files</button>
             <p class="file-list" id="piFileList">No files selected.</p>
           </div>
@@ -85,10 +85,12 @@
           <button id="downloadSignedPi" class="primary">Download Signed PI PDF</button>
         </div>
         <div>
-          <h2>Quick CSV Format Example</h2>
-<pre class="sample">item_code,qty,price_per_item
-WCFRKIW,100,1.24
-ABC001,300,0.95</pre>
+          <h2>Accepted input types</h2>
+<pre class="sample">PO: PDF or image
+PI: PDF or image
+
+Note: best results with text-based PDFs.
+Image PDFs/JPG/PNG will need OCR support in the next step.</pre>
         </div>
       </section>
     </main>

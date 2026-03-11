@@ -19,27 +19,17 @@ let poFiles = [];
 let piFiles = [];
 let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-result' };
 
-const SAMPLE_PO = `item_code,qty,price_per_item\nWCFRKIW,100,1.24\nABC001,300,0.95`;
-const SAMPLE_PI = `item_code,qty,price_per_item\nWCFRKIW,200,1.39\nABC001,300,0.95`;
+const SAMPLE_PO_ROWS = [
+  { item_code: 'WCFRKIW', qty: 100, price_per_item: 1.24 },
+  { item_code: 'ABC001', qty: 300, price_per_item: 0.95 },
+];
+const SAMPLE_PI_ROWS = [
+  { item_code: 'WCFRKIW', qty: 200, price_per_item: 1.39 },
+  { item_code: 'ABC001', qty: 300, price_per_item: 0.95 },
+];
 
 function normalizeItemCode(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
-}
-
-function parseCsv(text) {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-  return lines.slice(1).map(line => {
-    const values = line.split(',').map(v => v.trim());
-    const obj = {};
-    headers.forEach((h, idx) => obj[h] = values[idx] ?? '');
-    return {
-      item_code: normalizeItemCode(obj.item_code),
-      qty: Number(obj.qty),
-      price_per_item: Number(obj.price_per_item),
-    };
-  }).filter(r => r.item_code && Number.isFinite(r.qty) && Number.isFinite(r.price_per_item));
 }
 
 function extractTextFromPdfBytes(arrayBuffer) {
@@ -110,13 +100,6 @@ function parseRowsFromPdfText(text) {
 async function parseRowsFromFile(file) {
   const name = file.name.toLowerCase();
 
-  if (name.endsWith('.csv')) {
-    const text = await readTextFile(file);
-    const rows = parseCsv(text);
-    const coreFields = extractCoreFields(text);
-    return { rows, mode: 'csv', warning: null, coreFields };
-  }
-
   if (name.endsWith('.pdf')) {
     const buffer = await readArrayBuffer(file);
     const text = extractTextFromPdfBytes(buffer);
@@ -127,7 +110,7 @@ async function parseRowsFromFile(file) {
       return {
         rows: [],
         mode: 'pdf',
-        warning: 'Could not reliably extract line rows from this PDF. Please use CSV export for comparison.',
+        warning: 'Could not reliably extract line rows from this PDF. Please upload a text-based PDF (not scanned image) for now.',
         coreFields,
       };
     }
@@ -137,6 +120,15 @@ async function parseRowsFromFile(file) {
       mode: 'pdf',
       warning: 'PDF parsed in strict mode (core-field + row pattern checks). Please review results.',
       coreFields,
+    };
+  }
+
+  if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg')) {
+    return {
+      rows: [],
+      mode: 'image',
+      warning: 'Image parsing needs OCR support, which is not enabled yet in this local prototype. Please use text-based PDF for now.',
+      coreFields: { poNo: null, paymentTerms: null, totalCost: null },
     };
   }
 
@@ -273,15 +265,6 @@ function buildSimplePdfBytes(lines) {
   return new TextEncoder().encode(pdf);
 }
 
-function readTextFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsText(file);
-  });
-}
-
 function readArrayBuffer(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -295,8 +278,8 @@ setupDropzone('po', poDropzone, poFileInput, poBrowse);
 setupDropzone('pi', piDropzone, piFileInput, piBrowse);
 
 document.getElementById('loadSample').addEventListener('click', () => {
-  const poRows = parseCsv(SAMPLE_PO);
-  const piRows = parseCsv(SAMPLE_PI);
+  const poRows = SAMPLE_PO_ROWS;
+  const piRows = SAMPLE_PI_ROWS;
   const result = compare(poRows, piRows);
   compareState = { ...result, piFilenameBase: 'PI-sample' };
 
@@ -334,7 +317,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   const result = compare(poParsed.rows, piParsed.rows);
   compareState = {
     ...result,
-    piFilenameBase: (piFile.name || 'PI').replace(/\.(csv|pdf|xls|xlsx)$/i, ''),
+    piFilenameBase: (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, ''),
   };
 
   const poCore = poParsed.coreFields || {};
