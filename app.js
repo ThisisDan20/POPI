@@ -22,6 +22,14 @@ let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-resu
 const SAMPLE_PO = `item_code,qty,price_per_item\nWCFRKIW,100,1.24\nABC001,300,0.95`;
 const SAMPLE_PI = `item_code,qty,price_per_item\nWCFRKIW,200,1.39\nABC001,300,0.95`;
 
+
+function normalizeItemCode(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '');
+}
+
 function parseCsv(text) {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
@@ -31,7 +39,7 @@ function parseCsv(text) {
     const obj = {};
     headers.forEach((h, idx) => obj[h] = values[idx] ?? '');
     return {
-      item_code: obj.item_code,
+      item_code: normalizeItemCode(obj.item_code),
       qty: Number(obj.qty),
       price_per_item: Number(obj.price_per_item),
     };
@@ -69,6 +77,22 @@ function parseRowsFromPdfText(text) {
   return rows.filter(r => Number.isFinite(r.qty) && Number.isFinite(r.price_per_item));
 }
 
+function hasLikelyHeader(text) {
+  const t = text.toLowerCase();
+  return t.includes('item') && (t.includes('qty') || t.includes('quantity')) && t.includes('price');
+}
+
+function isLowConfidencePdfRows(rows) {
+  if (!rows.length) return true;
+  const shortCount = rows.filter(r => (r.item_code || '').length < 5).length;
+  const mixedCaseCount = rows.filter(r => /[a-z]/.test(r.item_code || '')).length;
+  const unique = new Set(rows.map(r => r.item_code)).size;
+  const invalidNums = rows.filter(r => !Number.isFinite(r.qty) || !Number.isFinite(r.price_per_item)).length;
+  const shortRatio = shortCount / rows.length;
+  const mixedRatio = mixedCaseCount / rows.length;
+  return invalidNums > 0 || unique < Math.max(1, rows.length * 0.4) || shortRatio > 0.6 || mixedRatio > 0.5;
+}
+
 async function parseRowsFromFile(file) {
   const name = file.name.toLowerCase();
   if (name.endsWith('.csv')) {
@@ -78,11 +102,20 @@ async function parseRowsFromFile(file) {
   if (name.endsWith('.pdf')) {
     const buffer = await readArrayBuffer(file);
     const text = extractTextFromPdfBytes(buffer);
-    const rows = parseRowsFromPdfText(text);
-    const warning = rows.length
-      ? 'PDF parsed using text heuristics (best for text PDFs).'
-      : 'Could not parse structured rows from PDF. This is common for scanned/image PDFs; use CSV export for now.';
-    return { rows, mode: 'pdf', warning };
+    const rows = parseRowsFromPdfText(text).map(r => ({
+      ...r,
+      item_code: normalizeItemCode(r.item_code),
+    }));
+
+    if (!hasLikelyHeader(text) || isLowConfidencePdfRows(rows)) {
+      return {
+        rows: [],
+        mode: 'pdf',
+        warning: 'PDF text was detected but confidence is low for structured rows. To avoid false mismatches, please use CSV export for this file or provide a text-based PDF with clear item/qty/price columns.',
+      };
+    }
+
+    return { rows, mode: 'pdf', warning: 'PDF parsed using text heuristics (text PDF only).' };
   }
 
   return { rows: [], mode: 'unsupported', warning: `Unsupported file type for parsing: ${file.name}` };
@@ -107,12 +140,12 @@ function renderMismatches(rows) {
 }
 
 function compare(poRows, piRows) {
-  const piByItem = Object.fromEntries(piRows.map(r => [r.item_code, r]));
+  const piByItem = Object.fromEntries(piRows.map(r => [normalizeItemCode(r.item_code), r]));
   const mismatches = [];
   let needsManual = false;
 
   poRows.forEach(po => {
-    const pi = piByItem[po.item_code];
+    const pi = piByItem[normalizeItemCode(po.item_code)];
     if (!pi) {
       mismatches.push({ item: po.item_code, field: 'Missing on PI', po: 'Exists', pi: 'Missing', variance: 'N/A' });
       needsManual = true;
@@ -178,6 +211,15 @@ function setupDropzone(kind, dropzoneEl, inputEl, browseEl) {
     const files = e.dataTransfer?.files;
     if (files?.length) setSelectedFiles(kind, files);
   });
+}
+
+function clearLoadedFiles() {
+  poFiles = [];
+  piFiles = [];
+  poFileInput.value = '';
+  piFileInput.value = '';
+  poFileList.textContent = 'No files selected.';
+  piFileList.textContent = 'No files selected.';
 }
 
 function buildSimplePdfBytes(lines) {
@@ -319,5 +361,6 @@ document.getElementById('downloadSignedPi').addEventListener('click', () => {
   a.download = `${compareState.piFilenameBase}-signed.pdf`;
   a.click();
   URL.revokeObjectURL(url);
-  finalStatus.textContent = `Signed PDF downloaded: ${a.download}`;
+  finalStatus.textContent = `Signed PDF downloaded: ${a.download}. Uploaded PO/PI files were cleared from session.`;
+  clearLoadedFiles();
 });
