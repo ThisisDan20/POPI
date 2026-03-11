@@ -17,7 +17,7 @@ const finalStatus = document.getElementById('finalStatus');
 
 let poFiles = [];
 let piFiles = [];
-let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-result' };
+let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-result', poCore: null, piCore: null };
 
 const SAMPLE_PO_ROWS = [
   { item_code: 'WCFRKIW', qty: 100, price_per_item: 1.24 },
@@ -32,27 +32,56 @@ function normalizeItemCode(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
 }
 
-function extractTextFromPdfBytes(arrayBuffer) {
-  // Conservative text extraction: keep likely human-readable chunks and remove PDF internals.
+async function extractTextFromPdfBytes(arrayBuffer) {
+  // Conservative text extraction with a second-pass deflate decode for selectable PDFs.
   const bytes = new Uint8Array(arrayBuffer);
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
 
-  const rawChunks = binary.match(/\((?:\\.|[^\\)])*\)/g) || [];
   const internals = /^(TYPE|FONT|TOUNICODE|CONTENTS|CROPBOX|MEDIABOX|PARENT|RESOURCES|IMAGE\d*|REGISTRY|ORDERING|FONTBBOX|FONTFILE\d*|STEMV)$/i;
 
-  const cleaned = rawChunks
-    .map(chunk => chunk.slice(1, -1)
-      .replace(/\\\(/g, '(')
-      .replace(/\\\)/g, ')')
-      .replace(/\\n/g, '\n')
-      .replace(/\\r/g, '')
-      .trim())
-    .filter(Boolean)
-    .filter(chunk => chunk.length >= 3)
-    .filter(chunk => !internals.test(chunk))
+  const extractParenthesizedChunks = (blob) => {
+    const chunks = blob.match(/\((?:\\.|[^\\)])*\)/g) || [];
+    return chunks
+      .map(chunk => chunk.slice(1, -1)
+        .replace(/\\\(/g, '(')
+        .replace(/\\\)/g, ')')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '')
+        .trim())
+      .filter(Boolean)
+      .filter(chunk => chunk.length >= 3)
+      .filter(chunk => !internals.test(chunk));
+  };
+
+  const baseChunks = extractParenthesizedChunks(binary);
+
+  // If little text is found, try decoding Flate streams (common in selectable PDFs).
+  const flateDecodedChunks = [];
+  const streamRegex = /FlateDecode[\s\S]*?stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let m;
+  while ((m = streamRegex.exec(binary)) !== null) {
+    try {
+      const raw = m[1];
+      const rawBytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) rawBytes[i] = raw.charCodeAt(i) & 0xff;
+
+      if (typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('deflate');
+        const writer = ds.writable.getWriter();
+        writer.write(rawBytes);
+        writer.close();
+        const response = new Response(ds.readable);
+        const decoded = await response.text();
+        flateDecodedChunks.push(...extractParenthesizedChunks(decoded));
+      }
+    } catch (_) {
+      // best-effort only
+    }
+  }
+
+  const cleaned = [...baseChunks, ...flateDecodedChunks]
     .filter(chunk => {
-      // Keep chunks that look like business text, not random 3-char blobs.
       const hasLetters = /[A-Za-z]/.test(chunk);
       const hasWord = /\s/.test(chunk) || /\d/.test(chunk);
       const tooNoisy = /^[^A-Za-z0-9]+$/.test(chunk);
@@ -149,7 +178,7 @@ async function parseRowsFromFile(file) {
 
   if (name.endsWith('.pdf')) {
     const buffer = await readArrayBuffer(file);
-    const text = extractTextFromPdfBytes(buffer);
+    const text = await extractTextFromPdfBytes(buffer);
     const rows = parseRowsFromPdfText(text);
     const coreFields = extractCoreFields(text);
 
@@ -341,7 +370,7 @@ document.getElementById('loadSample').addEventListener('click', () => {
   const poRows = SAMPLE_PO_ROWS;
   const piRows = SAMPLE_PI_ROWS;
   const result = compare(poRows, piRows);
-  compareState = { ...result, piFilenameBase: 'PI-sample' };
+  compareState = { ...result, piFilenameBase: 'PI-sample', poCore: { poNo: '131008', paymentTerms: 'FOB', totalCost: '11012.40' }, piCore: { poNo: '131008', paymentTerms: 'FOB', totalCost: '11012.40' } };
 
   renderSummary([
     { check: 'PO required fields', status: 'PASS', className: 'pass', note: 'item_code, qty, price_per_item present (sample)' },
@@ -378,6 +407,8 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   compareState = {
     ...result,
     piFilenameBase: (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, ''),
+    poCore: poParsed.coreFields || null,
+    piCore: piParsed.coreFields || null,
   };
 
   const poCore = poParsed.coreFields || {};
@@ -437,7 +468,27 @@ document.getElementById('downloadSignedPi').addEventListener('click', async () =
     a.href = url;
     a.click();
     URL.revokeObjectURL(url);
-    finalStatus.textContent = `Signed PI downloaded from original PI content: ${a.download}. Uploaded PO/PI files were cleared from session.`;
+    // Also generate an approval-details PDF so signed metadata is visible.
+    const approvalLines = [
+      'PI Approval Details',
+      `File: ${compareState.piFilenameBase}`,
+      `Status: Approved`,
+      `Approved On: ${new Date().toISOString()}`,
+      `PO Number: ${compareState.poCore?.poNo || compareState.piCore?.poNo || 'N/A'}`,
+      `Payment Terms: ${compareState.piCore?.paymentTerms || 'N/A'}`,
+      `PI Total: ${compareState.piCore?.totalCost || 'N/A'}`,
+      'Confirmation: PI approved by user in local app',
+    ];
+    const approvalBytes = buildSimplePdfBytes(approvalLines);
+    const approvalBlob = new Blob([approvalBytes], { type: 'application/pdf' });
+    const approvalUrl = URL.createObjectURL(approvalBlob);
+    const b = document.createElement('a');
+    b.href = approvalUrl;
+    b.download = `${compareState.piFilenameBase}-signed-approval.pdf`;
+    b.click();
+    URL.revokeObjectURL(approvalUrl);
+
+    finalStatus.textContent = `Signed PI downloaded: ${a.download}. Approval details downloaded: ${b.download}. Uploaded PO/PI files were cleared from session.`;
     clearLoadedFiles();
     return;
   }
