@@ -1,0 +1,559 @@
+// local-only prototype guard
+window.fetch = () => Promise.reject(new Error('Network disabled in local-only mode'));
+window.XMLHttpRequest = class { open() { throw new Error('Network disabled'); } send() { throw new Error('Network disabled'); } };
+window.WebSocket = class { constructor() { throw new Error('Network disabled'); } };
+
+const poFileInput = document.getElementById('poFile');
+const piFileInput = document.getElementById('piFile');
+const poDropzone = document.getElementById('poDropzone');
+const piDropzone = document.getElementById('piDropzone');
+const poBrowse = document.getElementById('poBrowse');
+const piBrowse = document.getElementById('piBrowse');
+const poFileList = document.getElementById('poFileList');
+const piFileList = document.getElementById('piFileList');
+const summaryBody = document.getElementById('summaryBody');
+const mismatchBody = document.getElementById('mismatchBody');
+const finalStatus = document.getElementById('finalStatus');
+
+function getSelectedFile(kind) {
+  const tracked = kind === 'po' ? poFiles : piFiles;
+  const input = kind === 'po' ? poFileInput : piFileInput;
+  return tracked[0] || input?.files?.[0] || null;
+}
+
+let poFiles = [];
+let piFiles = [];
+let compareState = { passed: false, needsManual: false, piFilenameBase: 'PI-result', poCore: null, piCore: null };
+
+const SAMPLE_PO_ROWS = [
+  { item_code: 'WCFRKIW', qty: 100, price_per_item: 1.24 },
+  { item_code: 'ABC001', qty: 300, price_per_item: 0.95 },
+];
+const SAMPLE_PI_ROWS = [
+  { item_code: 'WCFRKIW', qty: 200, price_per_item: 1.39 },
+  { item_code: 'ABC001', qty: 300, price_per_item: 0.95 },
+];
+
+function normalizeItemCode(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+}
+
+async function extractTextFromPdfBytes(arrayBuffer) {
+  // Conservative text extraction with a second-pass deflate decode for selectable PDFs.
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+
+  const internals = /^(TYPE|FONT|TOUNICODE|CONTENTS|CROPBOX|MEDIABOX|PARENT|RESOURCES|IMAGE\d*|REGISTRY|ORDERING|FONTBBOX|FONTFILE\d*|STEMV)$/i;
+
+  const extractParenthesizedChunks = (blob) => {
+    const chunks = blob.match(/\((?:\\.|[^\\)])*\)/g) || [];
+    return chunks
+      .map(chunk => chunk.slice(1, -1)
+        .replace(/\\\(/g, '(')
+        .replace(/\\\)/g, ')')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '')
+        .trim())
+      .filter(Boolean)
+      .filter(chunk => chunk.length >= 3)
+      .filter(chunk => !internals.test(chunk));
+  };
+
+  const baseChunks = extractParenthesizedChunks(binary);
+
+  // If little text is found, try decoding Flate streams (common in selectable PDFs).
+  const flateDecodedChunks = [];
+  const streamRegex = /FlateDecode[\s\S]*?stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let m;
+  while ((m = streamRegex.exec(binary)) !== null) {
+    try {
+      const raw = m[1];
+      const rawBytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) rawBytes[i] = raw.charCodeAt(i) & 0xff;
+
+      if (typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('deflate');
+        const writer = ds.writable.getWriter();
+        writer.write(rawBytes);
+        writer.close();
+        const response = new Response(ds.readable);
+        const decoded = await response.text();
+        flateDecodedChunks.push(...extractParenthesizedChunks(decoded));
+      }
+    } catch (_) {
+      // best-effort only
+    }
+  }
+
+  const cleaned = [...baseChunks, ...flateDecodedChunks]
+    .filter(chunk => {
+      const hasLetters = /[A-Za-z]/.test(chunk);
+      const hasWord = /\s/.test(chunk) || /\d/.test(chunk);
+      const tooNoisy = /^[^A-Za-z0-9]+$/.test(chunk);
+      return hasLetters && hasWord && !tooNoisy;
+    });
+
+  return cleaned.join('\n');
+}
+
+function extractCoreFields(text) {
+  const t = text || '';
+  const poNo = t.match(/\b(?:PO\s*(?:#|NO\.?|NUMBER)\s*[:\-]?\s*)([A-Z0-9\-\/]+)/i)?.[1] || null;
+  const paymentTerms = t.match(/\b(?:PAYMENT\s*TERMS?|TERMS)\s*[:\-]?\s*([^\n]{2,50})/i)?.[1]?.trim() || null;
+  const totalCost = t.match(/\b(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE)\s*[:\-]?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i)?.[1] || null;
+  return { poNo, paymentTerms, totalCost };
+}
+
+function parseRowsFromPdfText(text) {
+  // Targeted PDF row extraction for business docs with selectable text.
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+
+  const rows = [];
+
+  // 1) Label-based extraction (best for your PO/PI formats).
+  const labelItem = normalized.match(/(?:ITEM\s*NO\.?|PARTNUM|PART\s*NO\.?|ITEM\s*CODE)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{2,20})/i);
+  const labelQty = normalized.match(/(?:ORDER\s*QTY\.?|QUANTITY\s*CTNS?|QUANTITY|QTY)\s*[:\-]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i);
+  const labelPrice = normalized.match(/(?:UNIT\s*PRICE|PRICE\s*\/\s*CTN|PRICE)\s*(?:USD)?\s*[:\-]?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*\/\s*1000)?/i);
+  const labelTotal = normalized.match(/(?:EXT\s*PRICE|AMOUNT|TOTAL\s*AMOUNT|LINE\s*TOTAL)\s*[:\-]?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)/i);
+
+  if (labelItem && (labelQty || labelTotal)) {
+    rows.push({
+      item_code: normalizeItemCode(labelItem[1]),
+      qty: labelQty ? Number(labelQty[1].replace(/,/g, '')) : null,
+      qty_uom: /CTN|CARTON/i.test(normalized) ? 'CTN' : (/\bEA\b|EACH|PCS/i.test(normalized) ? 'EA' : 'UNK'),
+      price_per_item: labelPrice ? Number(labelPrice[1].replace(/,/g, '')) : null,
+      line_total: labelTotal ? Number(labelTotal[1].replace(/,/g, '')) : null,
+    });
+  }
+
+  // 2) Generic fallback pattern.
+  if (!rows.length) {
+    const itemCodeMatch = normalized.match(/\b([A-Z]{1,8}[\-]?[A-Z0-9]{2,20})\b/);
+    const amountMatches = [...normalized.matchAll(/\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2}))/g)]
+      .map(m => Number(m[1].replace(/,/g, '')))
+      .filter(n => Number.isFinite(n) && n > 1);
+    const qtyMatches = [...normalized.matchAll(/\b([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(EA|EACH|PCS|CTN|CTNS|CARTON|CARTONS)?\b/gi)]
+      .map(m => ({ qty: Number(m[1].replace(/,/g, '')), uom: (m[2] || '').toUpperCase() }))
+      .filter(x => Number.isFinite(x.qty) && x.qty > 0);
+    const pricePerThousand = normalized.match(/\b([0-9]+(?:\.[0-9]+)?)\s*\/\s*1000\b/i);
+    const pricePerCtn = normalized.match(/(?:PRICE\s*\/\s*CTN|UNIT\s*PRICE|PRICE)\s*(?:USD)?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
+
+    const qtyTagged = qtyMatches.find(x => x.uom && ['CTN', 'CTNS', 'CARTON', 'CARTONS', 'EA', 'EACH', 'PCS'].includes(x.uom));
+    const qtyFallback = qtyMatches.find(x => x.qty >= 1 && x.qty <= 10000000);
+    const qtyObj = qtyTagged || qtyFallback;
+
+    if (itemCodeMatch && (qtyObj || amountMatches.length)) {
+      rows.push({
+        item_code: normalizeItemCode(itemCodeMatch[1]),
+        qty: qtyObj ? qtyObj.qty : null,
+        qty_uom: qtyObj ? (qtyObj.uom || 'UNK') : 'UNK',
+        price_per_item: pricePerCtn ? Number(pricePerCtn[1]) : (pricePerThousand ? Number(pricePerThousand[1]) : null),
+        price_basis: pricePerThousand ? 'PER_1000' : (pricePerCtn ? 'PER_CTN' : 'UNKNOWN'),
+        line_total: amountMatches.length ? Math.max(...amountMatches) : null,
+      });
+    }
+  }
+
+  return rows.filter(r => r.item_code && (Number.isFinite(r.qty) || Number.isFinite(r.line_total)));
+}
+
+function normalizeRowForCompare(row) {
+  const copy = { ...row };
+  copy.item_code = normalizeItemCode(copy.item_code);
+  copy.qty = Number(copy.qty);
+  copy.price_per_item = Number(copy.price_per_item);
+  copy.line_total = Number(copy.line_total);
+  return copy;
+}
+
+function quantitiesComparable(po, pi) {
+  if (!Number.isFinite(po.qty) || !Number.isFinite(pi.qty)) return { comparable: false, variance: null, note: 'Qty unavailable' };
+
+  // Direct compare first
+  const directVar = pctDiff(po.qty, pi.qty);
+  if (Math.abs(directVar) <= 5) return { comparable: true, variance: directVar, note: 'Direct qty match' };
+
+  // UOM bridge: PO often in each/per-1000, PI in CTN.
+  const poLarge = po.qty >= 10000;
+  const piSmall = pi.qty <= 5000;
+  if (poLarge && piSmall) {
+    const inferredPerCtn = po.qty / pi.qty;
+    const rounded = Math.round(inferredPerCtn);
+    if (rounded > 0) {
+      return { comparable: true, variance: 0, note: `Qty bridged via inferred ${rounded} each/ctn` };
+    }
+  }
+
+  return { comparable: false, variance: directVar, note: 'Qty mismatch' };
+}
+
+async function parseRowsFromFile(file) {
+  if (!file) {
+    return {
+      rows: [],
+      mode: 'missing',
+      warning: 'No file selected. Please choose a PO/PI file first.',
+      coreFields: { poNo: null, paymentTerms: null, totalCost: null },
+    };
+  }
+
+  const name = file.name.toLowerCase();
+
+  if (name.endsWith('.pdf')) {
+    const buffer = await readArrayBuffer(file);
+    const text = await extractTextFromPdfBytes(buffer);
+    const rows = parseRowsFromPdfText(text);
+    const coreFields = extractCoreFields(text);
+
+    return {
+      rows,
+      mode: 'pdf',
+      warning: rows.length
+        ? 'PDF parsed using business-field heuristics. Please review results.'
+        : 'No line rows extracted from PDF; running header/core-field checks only.',
+      coreFields,
+    };
+  }
+
+  if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg')) {
+    return {
+      rows: [],
+      mode: 'image',
+      warning: 'Image parsing needs OCR support, which is not enabled yet in this local prototype. Please use text-based PDF for now.',
+      coreFields: { poNo: null, paymentTerms: null, totalCost: null },
+    };
+  }
+
+  return { rows: [], mode: 'unsupported', warning: `Unsupported file type for parsing: ${file.name}`, coreFields: { poNo: null, paymentTerms: null, totalCost: null } };
+}
+
+function pctDiff(a, b) {
+  if (!a && !b) return 0;
+  if (!a) return 100;
+  return ((b - a) / a) * 100;
+}
+
+function renderSummary(rows) {
+  summaryBody.innerHTML = rows.map(r => `<tr><td>${r.check}</td><td class="${r.className}">${r.status}</td><td>${r.note}</td></tr>`).join('');
+}
+
+function renderMismatches(rows) {
+  if (!rows.length) {
+    mismatchBody.innerHTML = '<tr><td colspan="5" class="pass">No mismatches found.</td></tr>';
+    return;
+  }
+  mismatchBody.innerHTML = rows.map(r => `<tr><td>${r.item}</td><td>${r.field}</td><td>${r.po}</td><td class="fail">${r.pi}</td><td class="fail">${r.variance}</td></tr>`).join('');
+}
+
+function compare(poRows, piRows) {
+  const poNorm = poRows.map(normalizeRowForCompare);
+  const piNorm = piRows.map(normalizeRowForCompare);
+  const piByItem = Object.fromEntries(piNorm.map(r => [normalizeItemCode(r.item_code), r]));
+  const mismatches = [];
+  let needsManual = false;
+
+  poNorm.forEach(po => {
+    const pi = piByItem[normalizeItemCode(po.item_code)];
+    if (!pi) {
+      mismatches.push({ item: po.item_code, field: 'Missing on PI', po: 'Exists', pi: 'Missing', variance: 'N/A' });
+      needsManual = true;
+      return;
+    }
+
+    // Line total is strongest cross-format check.
+    if (Number.isFinite(po.line_total) && Number.isFinite(pi.line_total)) {
+      const totalVar = pctDiff(po.line_total, pi.line_total);
+      if (Math.abs(totalVar) > 1) {
+        mismatches.push({ item: po.item_code, field: 'Line total', po: po.line_total.toFixed(2), pi: pi.line_total.toFixed(2), variance: `${totalVar.toFixed(1)}%` });
+        needsManual = true;
+      }
+    }
+
+    const qtyCheck = quantitiesComparable(po, pi);
+    if (!qtyCheck.comparable && qtyCheck.variance !== null && Math.abs(qtyCheck.variance) > 5) {
+      mismatches.push({ item: po.item_code, field: 'Qty', po: po.qty, pi: pi.qty, variance: `${qtyCheck.variance.toFixed(1)}%` });
+      needsManual = true;
+    }
+
+    if (Number.isFinite(po.price_per_item) && Number.isFinite(pi.price_per_item)) {
+      const pVar = pctDiff(po.price_per_item, pi.price_per_item);
+      if (Math.abs(pVar) > 5) {
+        mismatches.push({ item: po.item_code, field: 'Price per item', po: po.price_per_item, pi: pi.price_per_item, variance: `${pVar.toFixed(1)}%` });
+      }
+    }
+  });
+
+  return { mismatches, needsManual, passed: mismatches.length === 0 };
+}
+
+function setSelectedFiles(kind, files) {
+  const cleanFiles = Array.from(files || []);
+  if (kind === 'po') {
+    poFiles = cleanFiles;
+    window.__poFiles = poFiles;
+    poFileList.textContent = poFiles.length ? poFiles.map(f => f.name).join(', ') : 'No files selected.';
+  } else {
+    piFiles = cleanFiles;
+    window.__piFiles = piFiles;
+    piFileList.textContent = piFiles.length ? piFiles.map(f => f.name).join(', ') : 'No files selected.';
+  }
+}
+
+function setupDropzone(kind, dropzoneEl, inputEl, browseEl) {
+  browseEl.addEventListener('click', () => inputEl.click());
+  dropzoneEl.addEventListener('click', (e) => { if (e.target.tagName !== 'BUTTON') inputEl.click(); });
+  dropzoneEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      inputEl.click();
+    }
+  });
+
+  inputEl.addEventListener('change', () => setSelectedFiles(kind, inputEl.files));
+
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropzoneEl.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzoneEl.classList.add('dragging');
+    });
+  });
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropzoneEl.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzoneEl.classList.remove('dragging');
+    });
+  });
+
+  dropzoneEl.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (files?.length) setSelectedFiles(kind, files);
+  });
+}
+
+function clearLoadedFiles() {
+  poFiles = [];
+  piFiles = [];
+  poFileInput.value = '';
+  piFileInput.value = '';
+  poFileList.textContent = 'No files selected.';
+  piFileList.textContent = 'No files selected.';
+}
+
+function buildSimplePdfBytes(lines) {
+  const safeLines = lines.map(line => String(line).replace(/[()\\]/g, '\\$&'));
+  let stream = 'BT\n/F1 12 Tf\n50 790 Td\n';
+  safeLines.forEach((line, idx) => {
+    if (idx > 0) stream += '0 -18 Td\n';
+    stream += `(${line}) Tj\n`;
+  });
+  stream += 'ET';
+
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+    `5 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`,
+  ];
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(pdf.length);
+    pdf += obj;
+  }
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += '0000000000 65535 f \n';
+  for (let i = 1; i <= objects.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return new TextEncoder().encode(pdf);
+}
+
+function readArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    if (!(file instanceof Blob)) {
+      reject(new Error('No valid file blob available for reading.'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+setupDropzone('po', poDropzone, poFileInput, poBrowse);
+setupDropzone('pi', piDropzone, piFileInput, piBrowse);
+
+window.debugParseCurrentFiles = async () => {
+  const po = getSelectedFile('po');
+  const pi = getSelectedFile('pi');
+  const poParsed = await parseRowsFromFile(po);
+  const piParsed = await parseRowsFromFile(pi);
+  console.log('PO parsed:', poParsed);
+  console.log('PI parsed:', piParsed);
+  return { poParsed, piParsed };
+};
+
+document.getElementById('loadSample').addEventListener('click', () => {
+  const poRows = SAMPLE_PO_ROWS;
+  const piRows = SAMPLE_PI_ROWS;
+  const result = compare(poRows, piRows);
+  compareState = { ...result, piFilenameBase: 'PI-sample', poCore: { poNo: '131008', paymentTerms: 'FOB', totalCost: '11012.40' }, piCore: { poNo: '131008', paymentTerms: 'FOB', totalCost: '11012.40' } };
+
+  renderSummary([
+    { check: 'PO required fields', status: 'PASS', className: 'pass', note: 'item_code, qty, price_per_item present (sample)' },
+    { check: 'PI required fields', status: 'PASS', className: 'pass', note: 'item_code, qty, price_per_item present (sample)' },
+    { check: 'Qty tolerance (5%)', status: result.needsManual ? 'MANUAL' : 'PASS', className: result.needsManual ? 'fail' : 'pass', note: result.needsManual ? 'Variance above tolerance found' : 'Within tolerance' },
+    { check: 'Overall', status: result.passed ? 'PASS' : 'REVIEW', className: result.passed ? 'pass' : 'warn', note: result.passed ? 'Auto-sign ready' : 'Manual check required' },
+  ]);
+  renderMismatches(result.mismatches);
+  finalStatus.textContent = 'Comparison loaded from sample data.';
+});
+
+document.getElementById('runCompare').addEventListener('click', async () => {
+  const poFile = getSelectedFile('po');
+  const piFile = getSelectedFile('pi');
+  if (!poFile || !piFile) {
+    finalStatus.textContent = 'Please upload at least one PO and one PI file.';
+    return;
+  }
+
+  const [poParsed, piParsed] = await Promise.all([parseRowsFromFile(poFile), parseRowsFromFile(piFile)]);
+
+  if (!poParsed.rows.length || !piParsed.rows.length) {
+    renderMismatches([]);
+    const poCore = poParsed.coreFields || {};
+    const piCore = piParsed.coreFields || {};
+    const poMatch = poCore.poNo && piCore.poNo && poCore.poNo === piCore.poNo;
+    const totalsMatch = poCore.totalCost && piCore.totalCost && Math.abs(Number(String(poCore.totalCost).replace(/,/g,'')) - Number(String(piCore.totalCost).replace(/,/g,''))) < 1;
+    compareState = {
+      passed: Boolean(poMatch),
+      needsManual: !poMatch,
+      piFilenameBase: (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, ''),
+      poCore,
+      piCore,
+    };
+    renderSummary([
+      { check: 'PO required core fields', status: poCore.poNo || poCore.totalCost ? 'PASS' : 'WARN', className: poCore.poNo || poCore.totalCost ? 'pass' : 'warn', note: poParsed.warning || 'Core fields partially extracted' },
+      { check: 'PI required core fields', status: piCore.poNo || piCore.totalCost ? 'PASS' : 'WARN', className: piCore.poNo || piCore.totalCost ? 'pass' : 'warn', note: piParsed.warning || 'Core fields partially extracted' },
+      { check: 'PO Number match', status: poMatch ? 'PASS' : 'MANUAL', className: poMatch ? 'pass' : 'warn', note: `${poCore.poNo || 'n/a'} vs ${piCore.poNo || 'n/a'}` },
+      { check: 'Total match', status: totalsMatch ? 'PASS' : 'INFO', className: totalsMatch ? 'pass' : 'warn', note: `${poCore.totalCost || 'n/a'} vs ${piCore.totalCost || 'n/a'}` },
+      { check: 'Overall', status: poMatch ? 'PASS' : 'REVIEW', className: poMatch ? 'pass' : 'warn', note: poMatch ? 'Core fields matched. You can proceed to sign.' : 'Core fields need manual confirmation.' },
+    ]);
+    finalStatus.textContent = [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'Core-field-only comparison complete.';
+    return;
+  }
+
+  const result = compare(poParsed.rows, piParsed.rows);
+  compareState = {
+    ...result,
+    piFilenameBase: (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, ''),
+    poCore: poParsed.coreFields || null,
+    piCore: piParsed.coreFields || null,
+  };
+
+  const poCore = poParsed.coreFields || {};
+  const piCore = piParsed.coreFields || {};
+  const coreNotes = [];
+  if (poCore.poNo && piCore.poNo) coreNotes.push(`PO#: ${poCore.poNo} vs ${piCore.poNo}`);
+  if (poCore.paymentTerms || piCore.paymentTerms) coreNotes.push(`Terms: ${poCore.paymentTerms || 'n/a'} vs ${piCore.paymentTerms || 'n/a'}`);
+  if (poCore.totalCost || piCore.totalCost) coreNotes.push(`Totals: ${poCore.totalCost || 'n/a'} vs ${piCore.totalCost || 'n/a'}`);
+
+  renderSummary([
+    { check: 'PO required fields', status: 'PASS', className: 'pass', note: `${poParsed.rows.length} line(s) from ${poFile.name} [${poParsed.mode}]` },
+    { check: 'PI required fields', status: 'PASS', className: 'pass', note: `${piParsed.rows.length} line(s) from ${piFile.name} [${piParsed.mode}]` },
+    { check: 'Core header checks', status: coreNotes.length ? 'INFO' : 'WARN', className: coreNotes.length ? 'pass' : 'warn', note: coreNotes.join(' | ') || 'PO#/terms/total not confidently extracted from one or both files.' },
+    { check: 'Qty tolerance (5%)', status: result.needsManual ? 'MANUAL' : 'PASS', className: result.needsManual ? 'fail' : 'pass', note: result.needsManual ? 'Variance above tolerance found' : 'Within tolerance' },
+    { check: 'Overall', status: result.passed ? 'PASS' : 'REVIEW', className: result.passed ? 'pass' : 'warn', note: result.passed ? 'Auto-sign ready' : 'Manual check required' },
+    { check: 'Parser notes', status: (poParsed.warning || piParsed.warning) ? 'INFO' : 'PASS', className: (poParsed.warning || piParsed.warning) ? 'warn' : 'pass', note: [poParsed.warning, piParsed.warning].filter(Boolean).join(' | ') || 'No parser warnings.' },
+  ]);
+
+  renderMismatches(result.mismatches.slice(0, 200));
+  if (result.mismatches.length > 200) {
+    finalStatus.textContent = `Comparison complete. Showing first 200 mismatches out of ${result.mismatches.length}. Please verify source extraction.`;
+  } else {
+    finalStatus.textContent = `Comparison complete (using first files in each list). PO files: ${poFiles.length}, PI files: ${piFiles.length}.`;
+  }
+});
+
+document.getElementById('finalize').addEventListener('click', () => {
+  if (compareState.passed) {
+    finalStatus.textContent = 'Passed checks. Auto-sign is ready.';
+    return;
+  }
+  const manualOverride = document.getElementById('manualOverride').checked;
+  const confirmReview = document.getElementById('confirmReview').checked;
+  if (manualOverride && confirmReview) {
+    finalStatus.textContent = 'Manual override accepted. Confirmed OK for signing.';
+    compareState.passed = true;
+  } else {
+    finalStatus.textContent = 'Manual checks incomplete. Please confirm both checkboxes.';
+  }
+});
+
+document.getElementById('downloadSignedPi').addEventListener('click', async () => {
+  if (!compareState.passed) {
+    finalStatus.textContent = 'Cannot download signed PI until checks pass or manual override is approved.';
+    return;
+  }
+
+  const a = document.createElement('a');
+  a.download = `${compareState.piFilenameBase}-signed.pdf`;
+
+  const sourcePi = piFiles[0];
+  if (sourcePi && sourcePi.name.toLowerCase().endsWith('.pdf')) {
+    // Use the actual uploaded PI PDF bytes so user gets the real document with signed suffix.
+    const originalBytes = await readArrayBuffer(sourcePi);
+    const blob = new Blob([originalBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+    // Also generate an approval-details PDF so signed metadata is visible.
+    const approvalLines = [
+      'PI Approval Details',
+      `File: ${compareState.piFilenameBase}`,
+      `Status: Approved`,
+      `Approved On: ${new Date().toISOString()}`,
+      `PO Number: ${compareState.poCore?.poNo || compareState.piCore?.poNo || 'N/A'}`,
+      `Payment Terms: ${compareState.piCore?.paymentTerms || 'N/A'}`,
+      `PI Total: ${compareState.piCore?.totalCost || 'N/A'}`,
+      'Confirmation: PI approved by user in local app',
+    ];
+    const approvalBytes = buildSimplePdfBytes(approvalLines);
+    const approvalBlob = new Blob([approvalBytes], { type: 'application/pdf' });
+    const approvalUrl = URL.createObjectURL(approvalBlob);
+    const b = document.createElement('a');
+    b.href = approvalUrl;
+    b.download = `${compareState.piFilenameBase}-signed-approval.pdf`;
+    b.click();
+    URL.revokeObjectURL(approvalUrl);
+
+    finalStatus.textContent = `Signed PI downloaded: ${a.download}. Approval details downloaded: ${b.download}. Uploaded PO/PI files were cleared from session.`;
+    clearLoadedFiles();
+    return;
+  }
+
+  // Fallback if PI source is not PDF.
+  const lines = [
+    'Signed Proforma Invoice',
+    `File: ${compareState.piFilenameBase}`,
+    'Status: Approved',
+    `Signed On: ${new Date().toISOString()}`,
+    'Signature Type: Typed confirmation',
+  ];
+  const pdfBytes = buildSimplePdfBytes(lines);
+  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.click();
+  URL.revokeObjectURL(url);
+  finalStatus.textContent = `Signed PDF downloaded: ${a.download}. Uploaded PO/PI files were cleared from session.`;
+  clearLoadedFiles();
+});
