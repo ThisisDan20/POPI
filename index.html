@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PO ↔ PI Checker</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="HUT_Logo_RGB.jpg" alt="Huhtamaki logo" class="logo" />
+        <div>
+          <h1>PO ↔ PI Checker</h1>
+          <p>Claude AI-powered comparison</p>
+        </div>
+      </div>
+      <div class="pill">API mode</div>
+    </header>
+
+    <section class="security-note">
+      🔒 PDF content is sent to Anthropic's API for data extraction only — same as uploading to Claude.ai.
+      No data is stored. API key is session-only and cleared on page close.
+    </section>
+
+    <main class="layout">
+
+      <!-- 0) API Key -->
+      <section class="card">
+        <h2>0) API Key</h2>
+        <div class="api-bar">
+          <input
+            type="password"
+            id="apiKeyInput"
+            placeholder="sk-ant-api03-…"
+            autocomplete="off"
+            spellcheck="false"
+            style="flex:1;padding:8px 10px;border:1px solid #c6d4e4;border-radius:8px;font-family:monospace;font-size:0.9rem;"
+          />
+          <span id="apiKeyStatus" class="ref-none"></span>
+        </div>
+        <p class="hint">Get your key from <strong>console.anthropic.com</strong> → API Keys. Stored in memory only — cleared when you close this page.</p>
+      </section>
+
+      <!-- 1) Upload -->
+      <section class="card">
+        <h2>1) Upload Files</h2>
+        <div class="upload-grid">
+          <div class="dropzone" id="poDropzone" role="button" tabindex="0" aria-label="PO upload zone">
+            <h3>PO File (Purchase Order)</h3>
+            <p>Drag &amp; drop or click · PDF or image</p>
+            <input type="file" id="poFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
+            <button type="button" id="poBrowse">Choose PO file(s)</button>
+            <p class="file-list" id="poFileList">No files selected.</p>
+          </div>
+          <div class="dropzone" id="piDropzone" role="button" tabindex="0" aria-label="PI upload zone">
+            <h3>PI File (Proforma Invoice)</h3>
+            <p>Drag &amp; drop or click · PDF or image</p>
+            <input type="file" id="piFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
+            <button type="button" id="piBrowse">Choose PI file(s)</button>
+            <p class="file-list" id="piFileList">No files selected.</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="runCompare" class="primary">▶ Run Comparison</button>
+          <button id="loadSample">Load sample data</button>
+        </div>
+        <div class="ref-bar">
+          <span id="refStatus" class="ref-none">⚠ No items reference loaded (optional)</span>
+          <label class="ref-label">
+            <input type="file" id="refFile" accept=".csv" hidden />
+            <button type="button" id="refBrowse" class="ref-btn">Load items.csv</button>
+          </label>
+        </div>
+        <p class="hint">Max 5 MB per file · PDFs and images (JPG/PNG) both supported · Up to 20 files per batch</p>
+      </section>
+
+      <!-- 2 & 3) Results + Manual Review -->
+      <section class="card split">
+        <div>
+          <h2>2) Match Summary</h2>
+          <table>
+            <thead><tr><th>Check</th><th>Status</th><th>Notes</th></tr></thead>
+            <tbody id="summaryBody">
+              <tr><td colspan="3" class="muted">Run comparison to see results.</td></tr>
+            </tbody>
+          </table>
+
+          <h3 class="subheading">Mismatch Details (PO vs PI)</h3>
+          <table>
+            <thead>
+              <tr><th>Item</th><th>Field</th><th>PO Value</th><th>PI Value</th><th>Variance</th></tr>
+            </thead>
+            <tbody id="mismatchBody">
+              <tr><td colspan="5" class="muted">No mismatches yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <h2>3) Manual Review</h2>
+          <div class="checklist">
+            <label><input type="checkbox" id="manualOverride" /> Approve quantity variance override</label>
+            <label><input type="checkbox" id="confirmReview" /> Confirm manual checks completed</label>
+          </div>
+          <button id="finalize" class="primary">Finalize &amp; Approve</button>
+          <p id="finalStatus" class="hint">Awaiting comparison.</p>
+        </div>
+      </section>
+
+      <!-- 4) Signing -->
+      <section class="card split">
+        <div>
+          <h2>4) Sign &amp; Download PI</h2>
+          <p class="hint">Signature block is stamped onto the PI PDF once checks pass.</p>
+
+          <div class="sign-fields">
+            <label>
+              Company
+              <select id="companySelect" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid #c6d4e4;border-radius:7px;font-size:0.92rem;">
+                <option>Huhtamaki Henderson Ltd</option>
+                <option>Huhtamaki Australia Pty Ltd</option>
+                <option>Huhtamaki Foodservice Packaging, Oceania</option>
+              </select>
+            </label>
+            <label style="margin-top:10px;display:block;">
+              Authorised By
+              <select id="signerSelect" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid #c6d4e4;border-radius:7px;font-size:0.92rem;"></select>
+            </label>
+          </div>
+
+          <button id="downloadSignedPi" class="primary" style="margin-top:14px;">⬇ Download Signed PI PDF</button>
+        </div>
+        <div>
+          <h2>About this tool</h2>
+          <pre class="sample">Claude AI reads both PDFs and returns
+structured data — no regex, no fragile
+table parsing.
+
+Supported: PDF, JPG, PNG (up to 5 MB)
+
+items.csv (optional): provide your item
+code mappings and pack sizes for more
+precise UOM matching.</pre>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- pdf-lib for stamping signature onto PI PDF (no data sent externally) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
