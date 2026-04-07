@@ -385,7 +385,8 @@ function compare(poDoc, piDoc) {
       // ── Line total (strongest cross-format check) ──
       if (po.line_total != null && pi.line_total != null) {
         const tVar = Math.abs(pct(po.line_total, pi.line_total));
-        if (tVar > 1) {
+        if (tVar > 5) {
+          // Hard fail — variance exceeds qty tolerance
           mismatches.push({
             item: po.item_code,
             field: 'Line Total',
@@ -394,6 +395,16 @@ function compare(poDoc, piDoc) {
             variance: `${tVar.toFixed(1)}%`,
           });
           pass = false; needsManual = true;
+        } else if (tVar > 1) {
+          // Soft info — within qty tolerance, likely a fill-container adjustment
+          mismatches.push({
+            item: po.item_code,
+            field: 'Line Total',
+            po: po.line_total,
+            pi: pi.line_total,
+            variance: `${tVar.toFixed(1)}% — within qty tolerance`,
+          });
+          // Does not block signing
         }
       }
 
