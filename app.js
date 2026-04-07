@@ -607,11 +607,18 @@ function buildFallbackPdf(lines) {
   return new TextEncoder().encode(`%PDF-1.4\n${body}${xref}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${offset}\n%%EOF`);
 }
 
-// ─── Signer dropdown ──────────────────────────────────────────────────────────
-function populateSigners(company) {
-  const sel = document.getElementById('signerSelect');
-  if (!sel) return;
-  sel.innerHTML = (COMPANIES[company] || []).map(s => `<option value="${s}">${s}</option>`).join('');
+// ─── Signer fields ────────────────────────────────────────────────────────────
+function initSignerFields() {
+  const nameEl = document.getElementById('signerName');
+  const posEl  = document.getElementById('signerPosition');
+  if (!nameEl || !posEl) return;
+
+  // Restore saved values
+  nameEl.value = localStorage.getItem('popi_signer_name') || '';
+  posEl.value  = localStorage.getItem('popi_signer_pos')  || '';
+
+  nameEl.addEventListener('input', () => localStorage.setItem('popi_signer_name', nameEl.value.trim()));
+  posEl.addEventListener('input',  () => localStorage.setItem('popi_signer_pos',  posEl.value.trim()));
 }
 
 // ─── Event handlers ───────────────────────────────────────────────────────────
@@ -662,12 +669,8 @@ if (refFileInput) {
   });
 }
 
-// Company dropdown
-const compSel = document.getElementById('companySelect');
-if (compSel) {
-  populateSigners(compSel.value);
-  compSel.addEventListener('change', () => populateSigners(compSel.value));
-}
+// Signer fields
+initSignerFields();
 
 // Run comparison
 document.getElementById('runCompare').addEventListener('click', async () => {
@@ -766,7 +769,9 @@ document.getElementById('downloadSignedPi').addEventListener('click', async () =
   }
   const piFile  = piFiles[0] || piFileInput?.files?.[0];
   const company = document.getElementById('companySelect')?.value || 'Huhtamaki Henderson Ltd';
-  const signer  = document.getElementById('signerSelect')?.value  || 'Authorised Signatory';
+  const signerName = document.getElementById('signerName')?.value.trim() || 'Authorised Signatory';
+  const signerPos  = document.getElementById('signerPosition')?.value.trim() || '';
+  const signer = signerPos ? `${signerName}, ${signerPos}` : signerName;
   const base    = compareState.piFilenameBase || 'PI';
 
   finalStatus.textContent = 'Generating signed PDF…';
