@@ -561,14 +561,10 @@ async function buildSignedPdf(piFile, company, signer) {
   const payTerms = compareState.piDoc?.fields?.payTerms || 'N/A';
 
   const sigLines = [
-    { text: 'APPROVED & CONFIRMED',          bold: true,  size: 11, color: rgb(0, 0.47, 0.78) },
-    { text: `Company:  ${company}`,           bold: false, size: 9.5 },
-    { text: `Authorised By:  ${signer}`,      bold: false, size: 9.5 },
-    { text: `Date:  ${dateStr}`,              bold: false, size: 9.5 },
-    { text: `PO Reference:  ${poNo}`,         bold: false, size: 9.5 },
-    { text: `PI Total:  ${piTotal}`,          bold: false, size: 9.5 },
-    { text: `Payment Terms:  ${payTerms}`,    bold: false, size: 9.5 },
-    { text: 'PI reviewed and approved.',      bold: false, size: 9,  color: rgb(0.2, 0.2, 0.2) },
+    { text: 'APPROVED & CONFIRMED',     bold: true,  size: 11, color: rgb(0, 0.47, 0.78) },
+    { text: `Company:  ${company}`,     bold: false, size: 9.5 },
+    { text: `Authorised By:  ${signer}`, bold: false, size: 9.5 },
+    { text: `Date:  ${dateStr}`,        bold: false, size: 9.5 },
   ];
 
   const BOX_W = 270; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
