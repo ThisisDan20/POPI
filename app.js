@@ -783,3 +783,61 @@ document.getElementById('downloadSignedPi').addEventListener('click', async () =
     console.error('[POPI] Sign error:', err);
   }
 });
+
+// ─── Debug helper — type debugDocs() in browser console after running comparison ──
+window.debugDocs = () => {
+  const po = compareState.poDoc;
+  const pi = compareState.piDoc;
+  if (!po || !pi) { console.log('No comparison run yet.'); return; }
+
+  console.group('=== PO fields ===');
+  console.table(po.fields);
+  console.groupEnd();
+
+  console.group('=== PO line items ===');
+  (po.items || []).forEach((it, i) => {
+    console.log(`Line ${i+1}:`, JSON.stringify(it));
+  });
+  console.groupEnd();
+
+  console.group('=== PI fields ===');
+  console.table(pi.fields);
+  console.groupEnd();
+
+  console.group('=== PI line items ===');
+  (pi.items || []).forEach((it, i) => {
+    console.log(`Line ${i+1}:`, JSON.stringify(it));
+  });
+  console.groupEnd();
+
+  console.group('=== Price normalisation walkthrough ===');
+  const poItems = po.items || [];
+  const piItems = pi.items || [];
+  const piMap = {};
+  for (const r of piItems) { for (const c of r.alt_codes) { if (c) piMap[c] = r; } }
+
+  for (const poIt of poItems) {
+    let piIt = null;
+    for (const c of poIt.alt_codes) { if (piMap[c]) { piIt = piMap[c]; break; } }
+    if (!piIt) { console.log(poIt.item_code, '— no PI match'); continue; }
+
+    const poQty = poIt.qty_ea ?? poIt.qty_ctn;
+    const piQty = piIt.qty_ctn ?? piIt.qty_ea;
+    const rawRatio = (poQty && piQty && poQty > piQty) ? poQty / piQty : null;
+    const STD_PACKS = [10,20,25,50,100,200,250,500,1000];
+    const snapPs = rawRatio ? STD_PACKS.find(p => Math.abs(rawRatio-p)/p < 0.10) || Math.round(rawRatio) : null;
+    const ps = poIt.pack_size || piIt.pack_size || snapPs;
+
+    console.log(poIt.item_code, {
+      po_price_basis: poIt.price_basis,
+      po_qty_ea: poIt.qty_ea, po_qty_ctn: poIt.qty_ctn, po_pack_size: poIt.pack_size,
+      pi_qty_ea: piIt.qty_ea, pi_qty_ctn: piIt.qty_ctn, pi_pack_size: piIt.pack_size,
+      rawRatio, snapPs, ps_used: ps,
+      po_price: poIt.unit_price,
+      po_normalised: poIt.price_basis === 'per_1000' && ps ? poIt.unit_price * (ps/1000) : poIt.unit_price,
+      pi_price: piIt.unit_price,
+    });
+  }
+  console.groupEnd();
+  return { po, pi };
+};
