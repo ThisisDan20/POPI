@@ -349,11 +349,23 @@ function compare(poDoc, piDoc) {
       if (po.unit_price != null && pi.unit_price != null) {
         let poPrice = po.unit_price;
         let piPrice = pi.unit_price;
+        let priceBasisNote = '';
 
-        // If PO price is per_1000, convert to per_ctn using pack_size
         if (po.price_basis === 'per_1000') {
-          const ps = po.pack_size || pi.pack_size || ref?.pack_size_ea;
-          if (ps) poPrice = po.unit_price * (ps / 1000);
+          // Derive pack size: explicit > ref file > qty ratio > nearest standard size
+          const poQty = po.qty_ea ?? po.qty_ctn ?? null;
+          const piQty = pi.qty_ctn ?? null;
+          const rawRatio = (poQty && piQty && poQty > piQty) ? poQty / piQty : null;
+          // Snap to nearest standard pack size if within 10% (handles qty discrepancies)
+          const STD_PACKS = [10, 20, 25, 50, 100, 200, 250, 500, 1000];
+          const snapPs = rawRatio
+            ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
+            : null;
+          const ps = po.pack_size || pi.pack_size || ref?.pack_size_ea || snapPs;
+          if (ps && ps > 1) {
+            poPrice = po.unit_price * (ps / 1000);
+            priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
+          }
         }
 
         const pVar = Math.abs(pct(poPrice, piPrice));
@@ -361,9 +373,9 @@ function compare(poDoc, piDoc) {
           mismatches.push({
             item: po.item_code,
             field: 'Unit Price',
-            po: `${po.unit_price}${po.price_basis === 'per_1000' ? '/1000' : ''}`,
-            pi: pi.unit_price,
-            variance: `${pVar.toFixed(2)}%`,
+            po: po.unit_price + (po.price_basis === 'per_1000' ? '/1000' : '') + priceBasisNote,
+            pi: piPrice,
+            variance: pVar.toFixed(2) + '%',
           });
           pass = false; needsManual = true;
         }
@@ -596,10 +608,22 @@ setupDropzone('pi', piDropzone, piFileInput, document.getElementById('piBrowse')
 
 // API key
 if (apiKeyInput) {
+  // Restore saved key on load
+  const savedKey = localStorage.getItem('popi_api_key');
+  if (savedKey) {
+    apiKeyInput.value = savedKey;
+    apiKey = savedKey;
+    if (apiKeyStatus) {
+      apiKeyStatus.textContent = '✓ Key restored from browser storage';
+      apiKeyStatus.className = 'ref-ok';
+    }
+  }
   apiKeyInput.addEventListener('input', () => {
     apiKey = apiKeyInput.value.trim();
+    if (apiKey) localStorage.setItem('popi_api_key', apiKey);
+    else localStorage.removeItem('popi_api_key');
     if (apiKeyStatus) {
-      apiKeyStatus.textContent = apiKey.startsWith('sk-ant-') ? '✓ Key looks valid' : apiKey ? '⚠ Key format unexpected' : '';
+      apiKeyStatus.textContent = apiKey.startsWith('sk-ant-') ? '✓ Key saved to browser storage' : apiKey ? '⚠ Key format unexpected' : '';
       apiKeyStatus.className   = apiKey.startsWith('sk-ant-') ? 'ref-ok' : 'ref-none';
     }
   });
@@ -641,9 +665,12 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   if (!poFile || !piFile) { finalStatus.textContent = 'Please select a PO and PI file first.'; return; }
   if (!apiKey) { finalStatus.textContent = 'Please enter your Anthropic API key above first.'; return; }
 
-  summaryBody.innerHTML  = '<tr><td colspan="3" class="muted">Sending to Claude API…</td></tr>';
-  mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">Parsing…</td></tr>';
-  finalStatus.textContent = 'Extracting data from documents…';
+  summaryBody.innerHTML  = '<tr><td colspan="3" class="muted">⏳ Sending to Claude API…</td></tr>';
+  mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">⏳ Parsing…</td></tr>';
+  finalStatus.textContent = '⏳ Extracting data — this takes 5–15 seconds…';
+  const runBtn = document.getElementById('runCompare');
+  runBtn.disabled = true;
+  runBtn.textContent = '⏳ Checking…';
 
   try {
     const [poDoc, piDoc] = await Promise.all([
@@ -677,8 +704,12 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       : 'Review required — see table above, then use Manual Review if needed.';
 
   } catch (err) {
-    finalStatus.textContent = `Unexpected error: ${err.message}`;
+    finalStatus.textContent = 'Error: ' + err.message;
     console.error('[POPI] Compare error:', err);
+  } finally {
+    const runBtn = document.getElementById('runCompare');
+    runBtn.disabled = false;
+    runBtn.textContent = '▶ Run Comparison';
   }
 });
 
