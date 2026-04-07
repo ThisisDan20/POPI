@@ -218,8 +218,12 @@ async function extractWithClaude(file) {
       price_basis:  it.price_basis || null,
       line_total:   it.line_total ?? null,
       // Convenience: item_code = first non-null code for lookup
-      item_code: (it.our_code || it.supplier_code || '').toUpperCase(),
-      alt_codes: [it.our_code, it.supplier_code].filter(Boolean).map(c => c.toUpperCase()),
+      // Item codes never contain slashes — strip anything from first / onwards
+      item_code: (it.our_code || it.supplier_code || '').toUpperCase().replace(/\s*\/.*$/, '').trim(),
+      alt_codes: [it.our_code, it.supplier_code]
+        .filter(Boolean)
+        .map(c => c.toUpperCase().replace(/\s*\/.*$/, '').trim())
+        .filter((c, i, a) => c && a.indexOf(c) === i),
     })),
     raw: parsed,
   };
