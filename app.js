@@ -260,15 +260,19 @@ function compare(poDoc, piDoc) {
   headerCheck('Incoterms',     pf.incoterms, if_.incoterms);
 
   if (pf.totalCost && if_.totalCost) {
-    const diff = Math.abs(parseFloat(pf.totalCost) - parseFloat(if_.totalCost));
-    const match = diff < 1;
+    const poTotal = parseFloat(pf.totalCost);
+    const piTotal = parseFloat(if_.totalCost);
+    const totalVar = Math.abs(pct(poTotal, piTotal));
+    const exact = Math.abs(poTotal - piTotal) < 1;
+    const withinTol = totalVar <= 5;
     checks.push({
       check: 'Total Cost',
-      status: match ? 'PASS' : 'FAIL',
-      className: match ? 'pass' : 'fail',
-      note: `PO: ${pf.totalCost}  |  PI: ${if_.totalCost}`,
+      status: exact ? 'PASS' : withinTol ? 'INFO' : 'FAIL',
+      className: exact ? 'pass' : withinTol ? 'warn' : 'fail',
+      note: `PO: ${pf.totalCost}  |  PI: ${if_.totalCost}` +
+        (!exact ? `  (${totalVar.toFixed(1)}% variance${withinTol ? ' — within qty tolerance' : ''})` : ''),
     });
-    if (!match) { pass = false; needsManual = true; }
+    if (!withinTol) { pass = false; needsManual = true; }
   }
 
   // ── Line item checks ──
