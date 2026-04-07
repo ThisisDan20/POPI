@@ -24,9 +24,26 @@ body {
   border-bottom: 1px solid #dde5ef;
 }
 .brand { display: flex; gap: 16px; align-items: center; }
-.logo { width: 86px; height: auto; object-fit: contain; }
-.brand h1 { margin: 0; font-size: 1.2rem; }
-.brand p { margin: 2px 0 0; color: var(--muted); }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 0.82rem; }
+.popi-wordmark {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  font-size: 1.55rem;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+.popi-po { color: #0077c8; }
+.popi-pi {
+  color: white;
+  background: #e8453c;
+  padding: 1px 8px;
+  border-radius: 5px;
+  margin-left: 3px;
+  font-size: 1.4rem;
+}
 .pill { background: #e8f4ff; color: var(--accent); padding: 8px 12px; border-radius: 999px; font-weight: 600; }
 .security-note {
   max-width: 1080px;
