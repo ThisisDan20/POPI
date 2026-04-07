@@ -104,7 +104,6 @@ function parseItemsCsv(text) {
       supplier_code: sup,
       description: get(row, 'description'),
       pack_size_ea: parseFloat(get(row, 'pack_size_ea')) || null,
-      std_price: parseFloat(get(row, 'std_price')) || null,
       currency: get(row, 'currency').toUpperCase() || 'USD',
     };
   }).filter(Boolean);
@@ -408,20 +407,7 @@ function compare(poDoc, piDoc) {
         }
       }
 
-      // ── Std price sanity (if ref file loaded) ──
-      if (ref?.std_price && pi.unit_price) {
-        const sVar = Math.abs(pct(ref.std_price, pi.unit_price));
-        if (sVar > 5) {
-          mismatches.push({
-            item: po.item_code,
-            field: 'Price vs Reference',
-            po: `Std: ${ref.std_price}`,
-            pi: pi.unit_price,
-            variance: `${sVar.toFixed(1)}% from std`,
-          });
-          needsManual = true;
-        }
-      }
+
     }
 
     checks.push({
