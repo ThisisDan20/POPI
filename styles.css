@@ -19,12 +19,12 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
-  background: #fff;
-  border-bottom: 1px solid #dde5ef;
+  padding: 14px 24px;
+  background: #0077c8;
+  border-bottom: none;
 }
-.brand { display: flex; gap: 16px; align-items: center; }
-.brand p { margin: 2px 0 0; color: var(--muted); font-size: 0.82rem; }
+.brand { display: flex; gap: 14px; align-items: center; }
+.brand p { margin: 3px 0 0; color: rgba(255,255,255,0.65); font-size: 0.78rem; }
 .popi-wordmark {
   font-family: 'Syne', sans-serif;
   font-weight: 800;
@@ -35,7 +35,7 @@ body {
   display: flex;
   align-items: center;
 }
-.popi-po { color: #0077c8; }
+.popi-po { color: #c8e6a0; }
 .popi-pi {
   color: white;
   background: #e8453c;
@@ -44,7 +44,7 @@ body {
   margin-left: 3px;
   font-size: 1.4rem;
 }
-.pill { background: #e8f4ff; color: var(--accent); padding: 8px 12px; border-radius: 999px; font-weight: 600; }
+.pill { background: rgba(255,255,255,0.18); color: white; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 0.82rem; }
 .security-note {
   max-width: 1080px;
   margin: 12px auto 0;
