@@ -361,7 +361,8 @@ function compare(poDoc, piDoc) {
           const snapPs = rawRatio
             ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
             : null;
-          const ps = po.pack_size || pi.pack_size || ref?.pack_size_ea || snapPs;
+          // PI pack_size is authoritative (supplier's actual unit) — PO pack_size from Epicor is unreliable
+          const ps = pi.pack_size || ref?.pack_size_ea || snapPs || po.pack_size;
           if (ps && ps > 1) {
             poPrice = po.unit_price * (ps / 1000);
             priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
