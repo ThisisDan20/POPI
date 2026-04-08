@@ -31,7 +31,6 @@ const COMPANIES = {
 let poFiles = [];
 let piFiles = [];
 let itemsRef = [];
-let apiKey = '';
 let compareState = {
   passed: false,
   needsManual: false,
@@ -54,8 +53,6 @@ const piFileList  = document.getElementById('piFileList');
 const summaryBody = document.getElementById('summaryBody');
 const mismatchBody = document.getElementById('mismatchBody');
 const finalStatus = document.getElementById('finalStatus');
-const apiKeyInput = document.getElementById('apiKeyInput');
-const apiKeyStatus = document.getElementById('apiKeyStatus');
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 function pct(a, b) {
@@ -150,8 +147,6 @@ Notes:
 - Return null for any field you cannot find — do not guess`;
 
 async function extractWithClaude(file) {
-  if (!apiKey) throw new Error('No API key set — enter your Anthropic API key above.');
-
   const fname = file.name.toLowerCase();
   const isPdf = fname.endsWith('.pdf');
   const isImage = /\.(png|jpg|jpeg)$/.test(fname);
@@ -166,13 +161,11 @@ async function extractWithClaude(file) {
     ? { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
     : { type: 'image',    source: { type: 'base64', media_type: mediaType, data: base64 } };
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const WORKER_URL = 'https://popi-proxy.YOUR_SUBDOMAIN.workers.dev/v1/messages';
+  const response = await fetch(WORKER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5',
@@ -611,28 +604,7 @@ function initSignerFields() {
 setupDropzone('po', poDropzone, poFileInput, document.getElementById('poBrowse'));
 setupDropzone('pi', piDropzone, piFileInput, document.getElementById('piBrowse'));
 
-// API key
-if (apiKeyInput) {
-  // Restore saved key on load
-  const savedKey = localStorage.getItem('popi_api_key');
-  if (savedKey) {
-    apiKeyInput.value = savedKey;
-    apiKey = savedKey;
-    if (apiKeyStatus) {
-      apiKeyStatus.textContent = '✓ Key restored from browser storage';
-      apiKeyStatus.className = 'ref-ok';
-    }
-  }
-  apiKeyInput.addEventListener('input', () => {
-    apiKey = apiKeyInput.value.trim();
-    if (apiKey) localStorage.setItem('popi_api_key', apiKey);
-    else localStorage.removeItem('popi_api_key');
-    if (apiKeyStatus) {
-      apiKeyStatus.textContent = apiKey.startsWith('sk-ant-') ? '✓ Key saved to browser storage' : apiKey ? '⚠ Key format unexpected' : '';
-      apiKeyStatus.className   = apiKey.startsWith('sk-ant-') ? 'ref-ok' : 'ref-none';
-    }
-  });
-}
+// API key handled server-side via Cloudflare Worker
 
 // Reference file
 const refBrowse    = document.getElementById('refBrowse');
@@ -664,8 +636,6 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   const piFile = piFiles[0] || piFileInput?.files?.[0];
 
   if (!poFile || !piFile) { finalStatus.textContent = 'Please select a PO and PI file first.'; return; }
-  if (!apiKey) { finalStatus.textContent = 'Please enter your Anthropic API key above first.'; return; }
-
   summaryBody.innerHTML  = '<tr><td colspan="3" class="muted">⏳ Sending to Claude API…</td></tr>';
   mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">⏳ Parsing…</td></tr>';
   finalStatus.textContent = '⏳ Extracting data — this takes 5–15 seconds…';
