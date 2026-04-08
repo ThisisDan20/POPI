@@ -161,7 +161,7 @@ async function extractWithClaude(file) {
     ? { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
     : { type: 'image',    source: { type: 'base64', media_type: mediaType, data: base64 } };
 
-  const WORKER_URL = 'https://popi-proxy.YOUR_SUBDOMAIN.workers.dev/v1/messages';
+  const WORKER_URL = 'https://twilight-hat-3a8e.dgroberts.workers.dev/v1/messages';
   const response = await fetch(WORKER_URL, {
     method: 'POST',
     headers: {
