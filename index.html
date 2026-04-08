@@ -5,14 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POPI — PO · PI Checker</title>
     <link rel="stylesheet" href="styles.css" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=DM+Sans:wght@300;400;500&display=block" rel="stylesheet">
-    <style>
-      /* Hide topbar until Syne is loaded to prevent font flash */
-      .topbar { opacity: 0; transition: opacity 0.15s; }
-      .fonts-loaded .topbar { opacity: 1; }
-    </style>
+
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>" />
   </head>
   <body>
@@ -40,30 +33,10 @@
     </header>
 
     <section class="security-note">
-      🔒 PDF content is sent to Anthropic's API for data extraction only — same as uploading to Claude.ai.
-      No data is stored. API key is session-only and cleared on page close.
+      🔒 PDF content is sent to Anthropic's API for data extraction only — same as uploading to Claude.ai. No data is stored.
     </section>
 
     <main class="layout">
-
-      <!-- 0) API Key -->
-      <section class="card">
-        <h2>0) API Key</h2>
-        <div class="api-bar">
-          <form autocomplete="off" style="display:contents">
-          <input
-            type="password"
-            id="apiKeyInput"
-            placeholder="sk-ant-api03-…"
-            autocomplete="new-password"
-            spellcheck="false"
-            style="flex:1;padding:8px 10px;border:1px solid #c6d4e4;border-radius:8px;font-family:monospace;font-size:0.9rem;"
-          />
-          </form>
-          <span id="apiKeyStatus" class="ref-none"></span>
-        </div>
-        <p class="hint">Get your key from <strong>console.anthropic.com</strong> → API Keys. Stored in memory only — cleared when you close this page.</p>
-      </section>
 
       <!-- 1) Upload -->
       <section class="card">
@@ -177,9 +150,6 @@ precise UOM matching.</pre>
     </main>
 
     <!-- pdf-lib for stamping signature onto PI PDF (no data sent externally) -->
-    <script>
-      document.fonts.ready.then(() => document.documentElement.classList.add('fonts-loaded'));
-    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="app.js"></script>
   </body>
