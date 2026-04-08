@@ -11,13 +11,6 @@
 
 * { box-sizing: border-box; }
 
-h1, h2, h3, h4 {
-  font-weight: inherit;
-  font-size: inherit;
-  margin: 0;
-  padding: 0;
-}
-
 body {
   margin: 0;
   font-family: 'DM Sans', Inter, Segoe UI, Arial, sans-serif;
