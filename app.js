@@ -174,7 +174,7 @@ async function extractWithClaude(file) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5',
-      max_tokens: 1500,
+      max_tokens: 4096,
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: 'Extract the procurement data from this document.' }] }],
     }),
