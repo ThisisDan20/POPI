@@ -638,55 +638,137 @@ if (refFileInput) {
 // Signer fields
 initSignerFields();
 
-// Run comparison
+// Run comparison — supports batch (multiple POs + PIs matched by PO number)
 document.getElementById('runCompare').addEventListener('click', async () => {
-  const poFile = poFiles[0] || poFileInput?.files?.[0];
-  const piFile = piFiles[0] || piFileInput?.files?.[0];
+  const allPoFiles = poFiles.length ? poFiles : Array.from(poFileInput?.files || []);
+  const allPiFiles = piFiles.length ? piFiles : Array.from(piFileInput?.files || []);
 
-  if (!poFile || !piFile) { finalStatus.textContent = 'Please select a PO and PI file first.'; return; }
-  summaryBody.innerHTML  = '<tr><td colspan="3" class="muted">⏳ Sending to Claude API…</td></tr>';
-  mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">⏳ Parsing…</td></tr>';
-  finalStatus.textContent = '⏳ Extracting data — this takes 5–15 seconds…';
+  if (!allPoFiles.length || !allPiFiles.length) {
+    finalStatus.textContent = 'Please select at least one PO and one PI file first.'; return;
+  }
+
   const runBtn = document.getElementById('runCompare');
   runBtn.disabled = true;
   runBtn.textContent = '⏳ Checking…';
+  summaryBody.innerHTML  = `<tr><td colspan="3" class="muted">⏳ Parsing ${allPoFiles.length} PO(s) and ${allPiFiles.length} PI(s)…</td></tr>`;
+  mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">⏳ Parsing…</td></tr>';
+  finalStatus.textContent = `⏳ Extracting data from ${allPoFiles.length + allPiFiles.length} files…`;
 
   try {
-    const [poDoc, piDoc] = await Promise.all([
-      extractWithClaude(poFile).catch(e => ({ ok: false, filename: poFile.name, error: e.message })),
-      extractWithClaude(piFile).catch(e => ({ ok: false, filename: piFile.name, error: e.message })),
+    // Parse all files in parallel
+    const [poDocs, piDocs] = await Promise.all([
+      Promise.all(allPoFiles.map(f => extractWithClaude(f).catch(e => ({ ok: false, filename: f.name, error: e.message })))),
+      Promise.all(allPiFiles.map(f => extractWithClaude(f).catch(e => ({ ok: false, filename: f.name, error: e.message })))),
     ]);
 
-    compareState.poDoc = poDoc;
-    compareState.piDoc = piDoc;
-    compareState.piFilenameBase = (piFile.name || 'PI').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+    // If single pair, use original flow
+    if (poDocs.length === 1 && piDocs.length === 1) {
+      const poDoc = poDocs[0], piDoc = piDocs[0];
+      compareState.poDoc = poDoc;
+      compareState.piDoc = piDoc;
+      compareState.piFilenameBase = allPiFiles[0].name.replace(/\.(pdf|png|jpg|jpeg)$/i, '');
 
-    if (!poDoc.ok) {
-      finalStatus.textContent = `PO error: ${poDoc.error}`;
-      renderSummary([{ check: 'PO Parse', status: 'FAIL', className: 'fail', note: poDoc.error }]);
-      renderMismatches([]); return;
+      if (!poDoc.ok) {
+        renderSummary([{ check: 'PO Parse', status: 'FAIL', className: 'fail', note: poDoc.error }]);
+        renderMismatches([]); finalStatus.textContent = `PO error: ${poDoc.error}`; return;
+      }
+      if (!piDoc.ok) {
+        renderSummary([{ check: 'PI Parse', status: 'FAIL', className: 'fail', note: piDoc.error }]);
+        renderMismatches([]); finalStatus.textContent = `PI error: ${piDoc.error}`; return;
+      }
+
+      const result = compare(poDoc, piDoc);
+      compareState.passed = result.pass;
+      compareState.needsManual = result.needsManual;
+      renderSummary(result.checks);
+      renderMismatches(result.mismatches);
+      finalStatus.textContent = result.pass
+        ? '✓ All checks passed. Ready to sign and download.'
+        : 'Review required — see table above, then use Manual Review if needed.';
+      return;
     }
-    if (!piDoc.ok) {
-      finalStatus.textContent = `PI error: ${piDoc.error}`;
-      renderSummary([{ check: 'PI Parse', status: 'FAIL', className: 'fail', note: piDoc.error }]);
-      renderMismatches([]); return;
+
+    // Batch flow — match by PO number
+    // Build PI lookup keyed by normalised PO number
+    const piByPoNo = {};
+    for (let i = 0; i < piDocs.length; i++) {
+      const pi = piDocs[i];
+      if (pi.ok && pi.fields?.poNo) {
+        piByPoNo[normalizePoNo(pi.fields.poNo)] = { doc: pi, file: allPiFiles[i] };
+      }
     }
 
-    const result = compare(poDoc, piDoc);
-    compareState.passed = result.pass;
-    compareState.needsManual = result.needsManual;
+    const batchResults = [];
+    let allPassed = true;
 
-    renderSummary(result.checks);
-    renderMismatches(result.mismatches);
-    finalStatus.textContent = result.pass
-      ? '✓ All checks passed. Ready to sign and download.'
-      : 'Review required — see table above, then use Manual Review if needed.';
+    for (let i = 0; i < poDocs.length; i++) {
+      const poDoc = poDocs[i];
+      const poFile = allPoFiles[i];
+
+      if (!poDoc.ok) {
+        batchResults.push({ poFile, poDoc, piDoc: null, result: null, error: poDoc.error });
+        allPassed = false;
+        continue;
+      }
+
+      const poNoKey = normalizePoNo(poDoc.fields?.poNo || '');
+      const piMatch = piByPoNo[poNoKey];
+
+      if (!piMatch) {
+        batchResults.push({ poFile, poDoc, piDoc: null, result: null,
+          error: `No matching PI found for PO ${poDoc.fields?.poNo || '(unknown)'}` });
+        allPassed = false;
+        continue;
+      }
+
+      const result = compare(poDoc, piMatch.doc);
+      if (!result.pass) allPassed = false;
+      batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
+    }
+
+    // Store last result for signing
+    const lastMatch = batchResults.filter(r => r.result).pop();
+    if (lastMatch) {
+      compareState.poDoc = lastMatch.poDoc;
+      compareState.piDoc = lastMatch.piDoc;
+      compareState.piFilenameBase = lastMatch.piFile?.name.replace(/\.(pdf|png|jpg|jpeg)$/i, '') || 'PI';
+      compareState.passed = allPassed;
+      compareState.needsManual = !allPassed;
+    }
+
+    // Render batch summary
+    const summaryRows = [];
+    const mismatchRows = [];
+
+    for (const br of batchResults) {
+      const poLabel = br.poDoc?.fields?.poNo || br.poFile.name;
+      if (br.error) {
+        summaryRows.push({ check: poLabel, status: 'FAIL', className: 'fail', note: br.error });
+        continue;
+      }
+      const overall = br.result.checks.find(c => c.check === 'Overall');
+      summaryRows.push({
+        check: poLabel,
+        status: overall?.status || '?',
+        className: overall?.className || 'warn',
+        note: br.result.checks.filter(c => c.status !== 'PASS' && c.check !== 'Overall')
+          .map(c => c.check + ': ' + c.status).join(' · ') || '✓ All passed',
+      });
+      for (const m of br.result.mismatches) {
+        mismatchRows.push({ ...m, item: `[${poLabel}] ${m.item}` });
+      }
+    }
+
+    renderSummary(summaryRows);
+    renderMismatches(mismatchRows);
+    finalStatus.textContent = allPassed
+      ? `✓ All ${batchResults.length} PO/PI pair(s) passed.`
+      : `${batchResults.filter(r=>r.result&&!r.result.pass).length} of ${batchResults.length} pair(s) need review.`;
 
   } catch (err) {
     finalStatus.textContent = 'Error: ' + err.message;
     console.error('[POPI] Compare error:', err);
   } finally {
-    const runBtn = document.getElementById('runCompare');
     runBtn.disabled = false;
     runBtn.textContent = '▶ Run Comparison';
   }
