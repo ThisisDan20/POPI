@@ -65,6 +65,11 @@ function normalize(s) {
   return String(s || '').toLowerCase().replace(/[\s\-\/]+/g, ' ').trim();
 }
 
+function normalizePoNo(s) {
+  // Strip any prefix (PO, #, spaces) and return just the digits
+  return String(s || '').replace(/[^0-9]/g, '');
+}
+
 async function readBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -240,7 +245,10 @@ function compare(poDoc, piDoc) {
       needsManual = true;
       return;
     }
-    const match = normalize(poVal) === normalize(piVal);
+    // Use digit-only comparison for PO Number to handle PO131043 vs 131043
+    const match = label === 'PO Number'
+      ? normalizePoNo(poVal) === normalizePoNo(piVal) && normalizePoNo(poVal).length > 0
+      : normalize(poVal) === normalize(piVal);
     checks.push({
       check: label,
       status: match ? 'PASS' : 'FAIL',
