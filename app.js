@@ -325,8 +325,8 @@ function compare(poDoc, piDoc) {
       if (pi.qty_ea != null) {
         piQtyEa = pi.qty_ea;
       } else if (pi.qty_ctn != null) {
-        // Determine pack size: Claude's value > ref file > heuristic
-        const ps = pi.pack_size || ref?.pack_size_ea || (poQtyEa && pi.qty_ctn ? Math.round(poQtyEa / pi.qty_ctn) : null);
+        // ref file takes top priority — overrides Claude's extraction from descriptions
+        const ps = ref?.pack_size_ea || pi.pack_size || (poQtyEa && pi.qty_ctn ? Math.round(poQtyEa / pi.qty_ctn) : null);
         if (ps && ps > 1) {
           piQtyEa = pi.qty_ctn * ps;
           bridgeNote = ` (${pi.qty_ctn} CTN × ${ps} ea/ctn = ${piQtyEa} ea)`;
@@ -365,8 +365,8 @@ function compare(poDoc, piDoc) {
           const snapPs = rawRatio
             ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
             : null;
-          // PI pack_size is authoritative (supplier's actual unit) — PO pack_size from Epicor is unreliable
-          const ps = pi.pack_size || ref?.pack_size_ea || snapPs || po.pack_size;
+          // ref file pack_size takes top priority — overrides Claude's extraction from descriptions
+          const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
           if (ps && ps > 1) {
             poPrice = po.unit_price * (ps / 1000);
             priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
@@ -655,11 +655,23 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   finalStatus.textContent = `⏳ Extracting data from ${allPoFiles.length + allPiFiles.length} files…`;
 
   try {
-    // Parse all files in parallel
-    const [poDocs, piDocs] = await Promise.all([
-      Promise.all(allPoFiles.map(f => extractWithClaude(f).catch(e => ({ ok: false, filename: f.name, error: e.message })))),
-      Promise.all(allPiFiles.map(f => extractWithClaude(f).catch(e => ({ ok: false, filename: f.name, error: e.message })))),
-    ]);
+    // Parse files sequentially to avoid rate limit (429)
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+    const parseSequential = async (files) => {
+      const results = [];
+      for (let i = 0; i < files.length; i++) {
+        if (i > 0) await delay(500); // 500ms between calls
+        finalStatus.textContent = `⏳ Parsing file ${i + 1} of ${files.length}…`;
+        const result = await extractWithClaude(files[i])
+          .catch(e => ({ ok: false, filename: files[i].name, error: e.message }));
+        results.push(result);
+      }
+      return results;
+    };
+
+    // Parse POs then PIs sequentially
+    const poDocs = await parseSequential(allPoFiles);
+    const piDocs = await parseSequential(allPiFiles);
 
     // If single pair, use original flow
     if (poDocs.length === 1 && piDocs.length === 1) {
