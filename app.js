@@ -2,7 +2,13 @@
 // Parsing: Claude API (Haiku) reads PDFs — no regex fragility
 // Comparison, signing, quiz: all local
 
-// ─── pdf-lib setup (signing only — no pdf.js needed) ─────────────────────────
+// ─── pdf.js setup (text extraction only) ────────────────────────────────────
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+// ─── pdf-lib setup (signing only) ────────────────────────────────────────────
 // PDFLib loaded via <script> tag in index.html
 
 // ─── Company / signer data ────────────────────────────────────────────────────
@@ -571,6 +577,25 @@ Notes:
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
 - Return null for any field you cannot find — do not guess`;
 
+// ─── PDF text extraction (client-side, no data sent externally) ──────────────
+async function extractTextFromPdf(file) {
+  if (typeof pdfjsLib === 'undefined') return null;
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const pages = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const tc = await page.getTextContent();
+      pages.push(tc.items.map(it => it.str).join(' '));
+    }
+    return pages.join(' ').trim();
+  } catch (e) {
+    console.warn('[POPI] pdf.js text extraction failed:', e.message);
+    return null;
+  }
+}
+
 async function extractWithClaude(file) {
   const fname = file.name.toLowerCase();
   const isPdf = fname.endsWith('.pdf');
@@ -578,13 +603,26 @@ async function extractWithClaude(file) {
 
   if (!isPdf && !isImage) throw new Error(`Unsupported file type: ${file.name}`);
 
-  const base64 = await readBase64(file);
-  const mediaType = isPdf ? 'application/pdf'
-    : fname.endsWith('.png') ? 'image/png' : 'image/jpeg';
+  let contentBlock;
 
-  const contentBlock = isPdf
-    ? { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
-    : { type: 'image',    source: { type: 'base64', media_type: mediaType, data: base64 } };
+  if (isPdf) {
+    // Option A: extract text client-side first — raw PDF bytes never leave the browser
+    const pdfText = await extractTextFromPdf(file);
+    if (pdfText && pdfText.length > 100) {
+      // Send extracted text only — no PDF binary data transmitted
+      contentBlock = { type: 'text', text: 'DOCUMENT TEXT (extracted locally):\n\n' + pdfText };
+    } else {
+      // Fallback: send as base64 if text extraction fails (e.g. scanned PDF)
+      const base64 = await readBase64(file);
+      contentBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+      console.warn('[POPI] Text extraction failed, falling back to PDF base64 for:', file.name);
+    }
+  } else {
+    // Images must be sent as base64 — no text to extract
+    const base64 = await readBase64(file);
+    const mediaType = fname.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    contentBlock = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }
 
   const WORKER_URL = 'https://popi-proxy.dgroberts.workers.dev/v1/messages';
   const response = await fetch(WORKER_URL, {
