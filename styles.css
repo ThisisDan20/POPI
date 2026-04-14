@@ -31,9 +31,9 @@ body {
 .brand p { margin: 3px 0 0; color: rgba(255,255,255,0.65); font-size: 0.78rem; }
 
 .popi-wordmark {
-  font-family: 'Syne', sans-serif;
+  font-family: 'Arial Black', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 800;
-  font-size: 1.55rem;
+  font-size: 20px;
   letter-spacing: -0.02em;
   line-height: 1;
   margin: 0;
@@ -61,7 +61,7 @@ body {
   padding: 2px 0;
   border-radius: 5px;
   margin-left: 4px;
-  font-family: 'Syne', sans-serif;
+  font-family: 'Arial Black', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 800;
 }
 
@@ -112,7 +112,7 @@ th, td { border-bottom: 1px solid #e7edf5; padding: 8px 6px; text-align: left; }
 .checklist { display: grid; gap: 10px; margin: 8px 0 12px; }
 .hint { color: var(--muted); font-size: 0.9rem; margin-top: 10px; }
 .subheading { margin: 14px 0 8px; font-size: 1rem; font-weight: 600; }
-.sample { background: #f8fbff; border: 1px solid #dce8f6; padding: 10px; border-radius: 8px; font-size: 0.88rem; }
+.sample { background: #f8fbff; border: 1px solid #dce8f6; padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; line-height: 1.5; }
 code { background: #eef3fa; padding: 2px 5px; border-radius: 5px; }
 .file-list { margin-top: 8px; color: var(--muted); font-size: 0.88rem; word-break: break-word; }
 
