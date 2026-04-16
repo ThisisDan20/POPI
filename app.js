@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.0
+// PO ↔ PI Checker — app.js v3.9
+// v3.9: Destination city + consignee name checks added
 // Parsing: Claude API (Haiku) reads PDFs — no regex fragility
 // Comparison, signing, quiz: all local
 
@@ -14,26 +15,17 @@ if (typeof pdfjsLib !== 'undefined') {
 // ─── Company / signer data ────────────────────────────────────────────────────
 const COMPANIES = {
   'Huhtamaki Henderson Ltd': [
-    'Supply Chain Manager',
-    'Procurement Manager',
-    'Finance Manager',
-    'General Manager',
+    'Supply Chain Manager', 'Procurement Manager', 'Finance Manager', 'General Manager',
   ],
   'Huhtamaki Australia Pty Ltd': [
-    'Purchasing Manager',
-    'Supply Chain Director',
-    'Finance Director',
-    'General Manager',
+    'Purchasing Manager', 'Supply Chain Director', 'Finance Director', 'General Manager',
   ],
   'Huhtamaki Foodservice Packaging, Oceania': [
-    'Commercial Manager',
-    'Procurement Lead',
-    'Supply Chain Manager',
-    'Finance Manager',
+    'Commercial Manager', 'Procurement Lead', 'Supply Chain Manager', 'Finance Manager',
   ],
 };
 
-// ─── Embedded items reference (edit here or use Claude Code to update) ──────────
+// ─── Embedded items reference ─────────────────────────────────────────────────
 const ITEMS_REF = [
   { our_code: "1000TP011", supplier_code: null, pack_size_ea: 280 },
   { our_code: "1042Z", supplier_code: null, pack_size_ea: 400 },
@@ -487,7 +479,6 @@ let compareState = {
   piDoc: null,
 };
 
-// Compliance quiz state
 let _uploadCounter = 0;
 let _quizThreshold = Math.floor(Math.random() * 3) + 10;
 
@@ -514,7 +505,6 @@ function normalize(s) {
 }
 
 function normalizePoNo(s) {
-  // Strip any prefix (PO, #, spaces) and return just the digits
   return String(s || '').replace(/[^0-9]/g, '');
 }
 
@@ -536,14 +526,13 @@ async function readBuffer(file) {
   });
 }
 
-
 function refLookup(code) {
   if (!code) return null;
   const c = code.toUpperCase();
   return ITEMS_REF.find(r => r.our_code === c || (r.supplier_code && r.supplier_code === c)) || null;
 }
 
-// ─── Claude API — PDF extraction ──────────────────────────────────────────────
+// ─── Claude API — PDF extraction ──────────────────────────────────────────
 const EXTRACT_PROMPT = `You are a procurement document parser. Extract structured data from this document and return ONLY valid JSON — no explanation, no markdown, no code blocks.
 
 Return this exact structure:
@@ -554,6 +543,9 @@ Return this exact structure:
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
   "total_cost": "number as string (no commas or $) or null",
+  "ship_to_city": "city from Ship To / delivery address on PO (e.g. Auckland, Sydney, Melbourne) or null",
+  "consignee_name": "company name from To / Consignee field on PI or null",
+  "consignee_city": "city from consignee or delivery address on PI (e.g. Auckland, Sydney) or null",
   "line_items": [
     {
       "our_code": "buyer item code e.g. H100219 or null",
@@ -577,7 +569,7 @@ Notes:
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
 - Return null for any field you cannot find — do not guess`;
 
-// ─── PDF text extraction (client-side, no data sent externally) ──────────────
+// ─── PDF text extraction (client-side) ───────────────────────────────────────
 async function extractTextFromPdf(file) {
   if (typeof pdfjsLib === 'undefined') return null;
   try {
@@ -606,19 +598,15 @@ async function extractWithClaude(file) {
   let contentBlock;
 
   if (isPdf) {
-    // Option A: extract text client-side first — raw PDF bytes never leave the browser
     const pdfText = await extractTextFromPdf(file);
     if (pdfText && pdfText.length > 100) {
-      // Send extracted text only — no PDF binary data transmitted
       contentBlock = { type: 'text', text: 'DOCUMENT TEXT (extracted locally):\n\n' + pdfText };
     } else {
-      // Fallback: send as base64 if text extraction fails (e.g. scanned PDF)
       const base64 = await readBase64(file);
       contentBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
       console.warn('[POPI] Text extraction failed, falling back to PDF base64 for:', file.name);
     }
   } else {
-    // Images must be sent as base64 — no text to extract
     const base64 = await readBase64(file);
     const mediaType = fname.endsWith('.png') ? 'image/png' : 'image/jpeg';
     contentBlock = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
@@ -627,9 +615,7 @@ async function extractWithClaude(file) {
   const WORKER_URL = 'https://popi-proxy.dgroberts.workers.dev/v1/messages';
   const response = await fetch(WORKER_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5',
       max_tokens: 4096,
@@ -645,8 +631,6 @@ async function extractWithClaude(file) {
 
   const data = await response.json();
   const raw = data.content?.find(b => b.type === 'text')?.text || '';
-
-  // Strip any accidental markdown fences
   const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
 
   let parsed;
@@ -657,24 +641,25 @@ async function extractWithClaude(file) {
     ok: true,
     filename: file.name,
     fields: {
-      poNo:      parsed.po_number || null,
-      payTerms:  parsed.payment_terms || null,
-      currency:  parsed.currency || null,
-      incoterms: parsed.incoterms || null,
-      totalCost: parsed.total_cost ? String(parsed.total_cost).replace(/,/g, '') : null,
+      poNo:          parsed.po_number || null,
+      payTerms:      parsed.payment_terms || null,
+      currency:      parsed.currency || null,
+      incoterms:     parsed.incoterms || null,
+      totalCost:     parsed.total_cost ? String(parsed.total_cost).replace(/,/g, '') : null,
+      shipToCity:    parsed.ship_to_city   || null,
+      consigneeName: parsed.consignee_name || null,
+      consigneeCity: parsed.consignee_city || null,
     },
     items: (parsed.line_items || []).map(it => ({
-      our_code:     (it.our_code || '').toUpperCase() || null,
+      our_code:      (it.our_code || '').toUpperCase() || null,
       supplier_code: (it.supplier_code || '').toUpperCase() || null,
-      description:  it.description || '',
-      qty_ea:       it.qty_ea ?? null,
-      qty_ctn:      it.qty_ctn ?? null,
-      pack_size:    it.pack_size_ea_per_ctn ?? null,
-      unit_price:   it.unit_price ?? null,
-      price_basis:  it.price_basis || null,
-      line_total:   it.line_total ?? null,
-      // Convenience: item_code = first non-null code for lookup
-      // Item codes never contain slashes — strip anything from first / onwards
+      description:   it.description || '',
+      qty_ea:        it.qty_ea ?? null,
+      qty_ctn:       it.qty_ctn ?? null,
+      pack_size:     it.pack_size_ea_per_ctn ?? null,
+      unit_price:    it.unit_price ?? null,
+      price_basis:   it.price_basis || null,
+      line_total:    it.line_total ?? null,
       item_code: (it.our_code || it.supplier_code || '').toUpperCase().replace(/\s*\/.*$/, '').trim(),
       alt_codes: [it.our_code, it.supplier_code]
         .filter(Boolean)
@@ -703,7 +688,6 @@ function compare(poDoc, piDoc) {
       needsManual = true;
       return;
     }
-    // Use digit-only comparison for PO Number to handle PO131043 vs 131043
     const match = label === 'PO Number'
       ? normalizePoNo(poVal) === normalizePoNo(piVal) && normalizePoNo(poVal).length > 0
       : normalize(poVal) === normalize(piVal);
@@ -720,6 +704,49 @@ function compare(poDoc, piDoc) {
   headerCheck('Payment Terms', pf.payTerms,  if_.payTerms);
   headerCheck('Currency',      pf.currency,  if_.currency);
   headerCheck('Incoterms',     pf.incoterms, if_.incoterms);
+
+  // ── Consignee name: PI "To" field should contain "Huhtamaki" ──
+  {
+    const piName = (if_.consigneeName || '').toLowerCase();
+    if (piName) {
+      const nameOk = piName.includes('huhtamaki');
+      checks.push({
+        check: 'Consignee',
+        status: nameOk ? 'PASS' : 'FAIL',
+        className: nameOk ? 'pass' : 'fail',
+        note: `PI addressed to: ${if_.consigneeName}`,
+      });
+      if (!nameOk) { pass = false; needsManual = true; }
+    } else {
+      checks.push({ check: 'Consignee', status: 'WARN', className: 'warn',
+        note: 'Consignee not found on PI — verify manually.' });
+      needsManual = true;
+    }
+  }
+
+  // ── Destination city: PO ship_to_city vs PI consignee_city ──
+  {
+    const poCity = pf.shipToCity || null;
+    const piCity = if_.consigneeCity || null;
+    if (!poCity) {
+      checks.push({ check: 'Destination', status: 'WARN', className: 'warn',
+        note: 'Destination city not found on PO — verify manually.' });
+      needsManual = true;
+    } else if (!piCity) {
+      checks.push({ check: 'Destination', status: 'WARN', className: 'warn',
+        note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
+      needsManual = true;
+    } else {
+      const match = normalize(poCity) === normalize(piCity);
+      checks.push({
+        check: 'Destination',
+        status: match ? 'PASS' : 'FAIL',
+        className: match ? 'pass' : 'fail',
+        note: `PO: ${poCity}  |  PI: ${piCity}`,
+      });
+      if (!match) { pass = false; needsManual = true; }
+    }
+  }
 
   if (pf.totalCost && if_.totalCost) {
     const poTotal = parseFloat(pf.totalCost);
@@ -746,7 +773,6 @@ function compare(poDoc, piDoc) {
       note: 'No line items extracted — header checks only.' });
     needsManual = true;
   } else {
-    // Build PI lookup by all known codes
     const piMap = {};
     for (const r of piItems) {
       for (const c of r.alt_codes) { if (c) piMap[c] = r; }
@@ -755,14 +781,11 @@ function compare(poDoc, piDoc) {
     let qtyIssues = 0;
 
     for (const po of poItems) {
-      // Find PI match: try direct codes, then reference file aliases
       let pi = null;
       for (const c of po.alt_codes) { if (piMap[c]) { pi = piMap[c]; break; } }
       if (!pi) {
         const ref = refLookup(po.item_code);
-        if (ref) {
-          pi = piMap[ref.supplier_code] || piMap[ref.our_code];
-        }
+        if (ref) { pi = piMap[ref.supplier_code] || piMap[ref.our_code]; }
       }
 
       if (!pi) {
@@ -772,11 +795,8 @@ function compare(poDoc, piDoc) {
       }
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
-      console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND (itemsRef.length=' + itemsRef.length + ')');
+      console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
 
-      // ── Normalise quantities to EA for comparison ──
-      // PO: Claude extracts qty_ea directly (Epicor EA field)
-      // PI: Claude extracts qty_ctn; multiply by pack_size to get EA
       let poQtyEa = po.qty_ea ?? po.qty_ctn ?? null;
       let piQtyEa = null;
       let bridgeNote = '';
@@ -784,7 +804,6 @@ function compare(poDoc, piDoc) {
       if (pi.qty_ea != null) {
         piQtyEa = pi.qty_ea;
       } else if (pi.qty_ctn != null) {
-        // ref file takes top priority — overrides Claude's extraction from descriptions
         const ps = ref?.pack_size_ea || pi.pack_size || (poQtyEa && pi.qty_ctn ? Math.round(poQtyEa / pi.qty_ctn) : null);
         if (ps && ps > 1) {
           piQtyEa = pi.qty_ctn * ps;
@@ -798,33 +817,27 @@ function compare(poDoc, piDoc) {
         const qVar = Math.abs(pct(poQtyEa, piQtyEa));
         if (qVar > 5) {
           mismatches.push({
-            item: po.item_code,
-            field: 'Qty',
-            po: `${poQtyEa} EA`,
-            pi: `${pi.qty_ctn ?? piQtyEa}${bridgeNote}`,
+            item: po.item_code, field: 'Qty',
+            po: `${poQtyEa} EA`, pi: `${pi.qty_ctn ?? piQtyEa}${bridgeNote}`,
             variance: `${qVar.toFixed(1)}%`,
           });
           pass = false; needsManual = true; qtyIssues++;
         }
       }
 
-      // ── Unit price — normalise both to same basis ──
       if (po.unit_price != null && pi.unit_price != null) {
         let poPrice = po.unit_price;
         let piPrice = pi.unit_price;
         let priceBasisNote = '';
 
         if (po.price_basis === 'per_1000') {
-          // Derive pack size: explicit > ref file > qty ratio > nearest standard size
           const poQty = po.qty_ea ?? po.qty_ctn ?? null;
           const piQty = pi.qty_ctn ?? null;
           const rawRatio = (poQty && piQty && poQty > piQty) ? poQty / piQty : null;
-          // Snap to nearest standard pack size if within 10% (handles qty discrepancies)
           const STD_PACKS = [10, 20, 25, 50, 100, 200, 250, 500, 1000];
           const snapPs = rawRatio
             ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
             : null;
-          // ref file pack_size takes top priority — overrides Claude's extraction from descriptions
           const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
           if (ps && ps > 1) {
             poPrice = po.unit_price * (ps / 1000);
@@ -835,43 +848,30 @@ function compare(poDoc, piDoc) {
         const pVar = Math.abs(pct(poPrice, piPrice));
         if (pVar > 0.5) {
           mismatches.push({
-            item: po.item_code,
-            field: 'Unit Price',
+            item: po.item_code, field: 'Unit Price',
             po: po.unit_price + (po.price_basis === 'per_1000' ? '/1000' : '') + priceBasisNote,
-            pi: piPrice,
-            variance: pVar.toFixed(2) + '%',
+            pi: piPrice, variance: pVar.toFixed(2) + '%',
           });
           pass = false; needsManual = true;
         }
       }
 
-      // ── Line total (strongest cross-format check) ──
       if (po.line_total != null && pi.line_total != null) {
         const tVar = Math.abs(pct(po.line_total, pi.line_total));
         if (tVar > 5) {
-          // Hard fail — variance exceeds qty tolerance
           mismatches.push({
-            item: po.item_code,
-            field: 'Line Total',
-            po: po.line_total,
-            pi: pi.line_total,
-            variance: `${tVar.toFixed(1)}%`,
+            item: po.item_code, field: 'Line Total',
+            po: po.line_total, pi: pi.line_total, variance: `${tVar.toFixed(1)}%`,
           });
           pass = false; needsManual = true;
         } else if (tVar > 1) {
-          // Soft info — within qty tolerance, likely a fill-container adjustment
           mismatches.push({
-            item: po.item_code,
-            field: 'Line Total',
-            po: po.line_total,
-            pi: pi.line_total,
+            item: po.item_code, field: 'Line Total',
+            po: po.line_total, pi: pi.line_total,
             variance: `${tVar.toFixed(1)}% — within qty tolerance`,
           });
-          // Does not block signing
         }
       }
-
-
     }
 
     checks.push({
@@ -883,9 +883,7 @@ function compare(poDoc, piDoc) {
 
     if (qtyIssues > 0) {
       checks.push({
-        check: 'Qty Tolerance (5%)',
-        status: 'MANUAL',
-        className: 'fail',
+        check: 'Qty Tolerance (5%)', status: 'MANUAL', className: 'fail',
         note: `${qtyIssues} line(s) outside 5% tolerance — manual approval required`,
       });
     }
@@ -1006,15 +1004,13 @@ async function buildSignedPdf(piFile, company, signer) {
   const { width } = lastPage.getSize();
 
   const dateStr = new Date().toLocaleDateString('en-AU', { year: 'numeric', month: 'long', day: 'numeric' });
-  const poNo    = compareState.poDoc?.fields?.poNo    || compareState.piDoc?.fields?.poNo    || 'N/A';
-  const piTotal = compareState.piDoc?.fields?.totalCost || 'N/A';
-  const payTerms = compareState.piDoc?.fields?.payTerms || 'N/A';
+  const poNo    = compareState.poDoc?.fields?.poNo || compareState.piDoc?.fields?.poNo || 'N/A';
 
   const sigLines = [
-    { text: 'APPROVED & CONFIRMED',     bold: true,  size: 11, color: rgb(0, 0.47, 0.78) },
-    { text: `Company:  ${company}`,     bold: false, size: 9.5 },
+    { text: 'APPROVED & CONFIRMED',      bold: true,  size: 11, color: rgb(0, 0.47, 0.78) },
+    { text: `Company:  ${company}`,      bold: false, size: 9.5 },
     { text: `Authorised By:  ${signer}`, bold: false, size: 9.5 },
-    { text: `Date:  ${dateStr}`,        bold: false, size: 9.5 },
+    { text: `Date:  ${dateStr}`,         bold: false, size: 9.5 },
   ];
 
   const BOX_W = 270; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
@@ -1058,11 +1054,8 @@ function initSignerFields() {
   const nameEl = document.getElementById('signerName');
   const posEl  = document.getElementById('signerPosition');
   if (!nameEl || !posEl) return;
-
-  // Restore saved values
   nameEl.value = localStorage.getItem('popi_signer_name') || '';
   posEl.value  = localStorage.getItem('popi_signer_pos')  || '';
-
   nameEl.addEventListener('input', () => localStorage.setItem('popi_signer_name', nameEl.value.trim()));
   posEl.addEventListener('input',  () => localStorage.setItem('popi_signer_pos',  posEl.value.trim()));
 }
@@ -1070,15 +1063,8 @@ function initSignerFields() {
 // ─── Event handlers ───────────────────────────────────────────────────────────
 setupDropzone('po', poDropzone, poFileInput, document.getElementById('poBrowse'));
 setupDropzone('pi', piDropzone, piFileInput, document.getElementById('piBrowse'));
-
-// API key handled server-side via Cloudflare Worker
-
-// Items reference embedded in app — no CSV loading needed
-
-// Signer fields
 initSignerFields();
 
-// Run comparison — supports batch (multiple POs + PIs matched by PO number)
 document.getElementById('runCompare').addEventListener('click', async () => {
   const allPoFiles = poFiles.length ? poFiles : Array.from(poFileInput?.files || []);
   const allPiFiles = piFiles.length ? piFiles : Array.from(piFileInput?.files || []);
@@ -1095,12 +1081,11 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   finalStatus.textContent = `⏳ Extracting data from ${allPoFiles.length + allPiFiles.length} files…`;
 
   try {
-    // Parse files sequentially to avoid rate limit (429)
     const delay = ms => new Promise(r => setTimeout(r, ms));
     const parseSequential = async (files) => {
       const results = [];
       for (let i = 0; i < files.length; i++) {
-        if (i > 0) await delay(500); // 500ms between calls
+        if (i > 0) await delay(500);
         finalStatus.textContent = `⏳ Parsing file ${i + 1} of ${files.length}…`;
         const result = await extractWithClaude(files[i])
           .catch(e => ({ ok: false, filename: files[i].name, error: e.message }));
@@ -1109,11 +1094,9 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       return results;
     };
 
-    // Parse POs then PIs sequentially
     const poDocs = await parseSequential(allPoFiles);
     const piDocs = await parseSequential(allPiFiles);
 
-    // If single pair, use original flow
     if (poDocs.length === 1 && piDocs.length === 1) {
       const poDoc = poDocs[0], piDoc = piDocs[0];
       compareState.poDoc = poDoc;
@@ -1140,8 +1123,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       return;
     }
 
-    // Batch flow — match by PO number
-    // Build PI lookup keyed by normalised PO number
+    // Batch flow
     const piByPoNo = {};
     for (let i = 0; i < piDocs.length; i++) {
       const pi = piDocs[i];
@@ -1159,8 +1141,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
 
       if (!poDoc.ok) {
         batchResults.push({ poFile, poDoc, piDoc: null, result: null, error: poDoc.error });
-        allPassed = false;
-        continue;
+        allPassed = false; continue;
       }
 
       const poNoKey = normalizePoNo(poDoc.fields?.poNo || '');
@@ -1169,8 +1150,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       if (!piMatch) {
         batchResults.push({ poFile, poDoc, piDoc: null, result: null,
           error: `No matching PI found for PO ${poDoc.fields?.poNo || '(unknown)'}` });
-        allPassed = false;
-        continue;
+        allPassed = false; continue;
       }
 
       const result = compare(poDoc, piMatch.doc);
@@ -1178,7 +1158,6 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
     }
 
-    // Store last result for signing
     const lastMatch = batchResults.filter(r => r.result).pop();
     if (lastMatch) {
       compareState.poDoc = lastMatch.poDoc;
@@ -1188,7 +1167,6 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       compareState.needsManual = !allPassed;
     }
 
-    // Render batch summary
     const summaryRows = [];
     const mismatchRows = [];
 
@@ -1226,18 +1204,19 @@ document.getElementById('runCompare').addEventListener('click', async () => {
   }
 });
 
-// Load sample
 document.getElementById('loadSample').addEventListener('click', () => {
   compareState = {
     passed: false, needsManual: true, piFilenameBase: 'PI-sample',
-    poDoc: { fields: { poNo: '130964', payTerms: 'T/T 30 days after BL', currency: 'USD', incoterms: 'FOB', totalCost: '11250.00' }, items: [] },
-    piDoc: { fields: { poNo: '130964', payTerms: 'T/T 30 days after BL', currency: 'USD', incoterms: 'FOB', totalCost: '11250.00' }, items: [] },
+    poDoc: { fields: { poNo: '130964', payTerms: 'T/T 30 days after BL', currency: 'USD', incoterms: 'FOB', totalCost: '11250.00', shipToCity: 'Auckland', consigneeName: null, consigneeCity: null }, items: [] },
+    piDoc: { fields: { poNo: '130964', payTerms: 'T/T 30 days after BL', currency: 'USD', incoterms: 'FOB', totalCost: '11250.00', shipToCity: null, consigneeName: 'Huhtamaki Henderson Ltd', consigneeCity: 'Auckland' }, items: [] },
   };
   renderSummary([
     { check: 'PO Number',     status: 'PASS',   className: 'pass', note: 'PO: 130964  |  PI: 130964' },
     { check: 'Payment Terms', status: 'PASS',   className: 'pass', note: 'T/T 30 days after BL' },
     { check: 'Currency',      status: 'PASS',   className: 'pass', note: 'USD | USD' },
     { check: 'Incoterms',     status: 'PASS',   className: 'pass', note: 'FOB | FOB' },
+    { check: 'Consignee',     status: 'PASS',   className: 'pass', note: 'PI addressed to: Huhtamaki Henderson Ltd' },
+    { check: 'Destination',   status: 'PASS',   className: 'pass', note: 'PO: Auckland  |  PI: Auckland' },
     { check: 'Total Cost',    status: 'PASS',   className: 'pass', note: '11,250.00 | 11,250.00' },
     { check: 'Line Items',    status: 'REVIEW', className: 'fail', note: 'PO: 3 lines | PI: 3 lines | Issues: 1' },
     { check: 'Qty Tolerance', status: 'MANUAL', className: 'fail', note: '1 line outside 5% tolerance' },
@@ -1247,7 +1226,6 @@ document.getElementById('loadSample').addEventListener('click', () => {
   finalStatus.textContent = 'Sample data loaded. Use Manual Review to approve.';
 });
 
-// Finalize
 document.getElementById('finalize').addEventListener('click', () => {
   if (compareState.passed) { finalStatus.textContent = '✓ Already passed. Ready to sign.'; return; }
   const override = document.getElementById('manualOverride').checked;
@@ -1260,7 +1238,6 @@ document.getElementById('finalize').addEventListener('click', () => {
   }
 });
 
-// Download signed PI
 document.getElementById('downloadSignedPi').addEventListener('click', async () => {
   if (!compareState.passed) {
     finalStatus.textContent = 'Cannot sign: all checks must pass (or manual override approved) first.'; return;
@@ -1299,7 +1276,7 @@ document.getElementById('downloadSignedPi').addEventListener('click', async () =
   }
 });
 
-// ─── Debug helper — type debugDocs() in browser console after running comparison ──
+// ─── Debug helper ─────────────────────────────────────────────────────────────
 window.debugDocs = () => {
   const po = compareState.poDoc;
   const pi = compareState.piDoc;
@@ -1310,9 +1287,7 @@ window.debugDocs = () => {
   console.groupEnd();
 
   console.group('=== PO line items ===');
-  (po.items || []).forEach((it, i) => {
-    console.log(`Line ${i+1}:`, JSON.stringify(it));
-  });
+  (po.items || []).forEach((it, i) => { console.log(`Line ${i+1}:`, JSON.stringify(it)); });
   console.groupEnd();
 
   console.group('=== PI fields ===');
@@ -1320,9 +1295,7 @@ window.debugDocs = () => {
   console.groupEnd();
 
   console.group('=== PI line items ===');
-  (pi.items || []).forEach((it, i) => {
-    console.log(`Line ${i+1}:`, JSON.stringify(it));
-  });
+  (pi.items || []).forEach((it, i) => { console.log(`Line ${i+1}:`, JSON.stringify(it)); });
   console.groupEnd();
 
   console.group('=== Price normalisation walkthrough ===');
