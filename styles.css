@@ -26,7 +26,7 @@ body {
 
 /* ── Sidebar ── */
 .sidebar {
-  width: 240px;
+  width: 260px;
   flex-shrink: 0;
   background: linear-gradient(160deg, #003d7a 0%, #0077c8 55%, #00a8e8 100%);
   padding: 20px 16px;
@@ -48,7 +48,7 @@ body {
 .sidebar-brand p {
   margin: 5px 0 0;
   color: rgba(255,255,255,0.6);
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   line-height: 1.4;
 }
 
@@ -120,23 +120,23 @@ body {
 }
 
 .sidebar-step-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 
 .sidebar-step-title {
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
   color: #111;
   line-height: 1.2;
 }
 
 .sidebar-step-sub {
-  font-size: 11px;
+  font-size: 13px;
   color: #555;
-  margin-top: 3px;
+  margin-top: 4px;
   line-height: 1.4;
 }
 
@@ -144,9 +144,9 @@ body {
   margin-top: 14px;
   background: rgba(255,255,255,0.13);
   border-radius: 7px;
-  padding: 9px 11px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.7);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: rgba(255,255,255,0.75);
   line-height: 1.5;
 }
 
