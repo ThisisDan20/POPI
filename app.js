@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.9
+// PO ↔ PI Checker — app.js v3.10
+// v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
 // v3.9: Destination city + consignee name checks added
 // Parsing: Claude API (Haiku) reads PDFs — no regex fragility
 // Comparison, signing, quiz: all local
@@ -567,6 +568,7 @@ Notes:
 - If a row has both a buyer code AND a supplier code, populate both fields
 - total_cost should be the document grand total
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
+- IMPORTANT: Buyer item codes (our_code) on PIs often appear split across two lines due to narrow column widths — e.g. "H10029" on one line and "9" on the next line. Always reconstruct these into a single code (e.g. "H100299"). Huhtamaki codes follow the pattern H1XXXXX (7 characters total starting with H1).
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
