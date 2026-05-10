@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.10
+// PO ↔ PI Checker — app.js v3.11
+// v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
 // v3.9: Destination city + consignee name checks added
 // Parsing: Claude API (Haiku) reads PDFs — no regex fragility
@@ -832,19 +833,23 @@ function compare(poDoc, piDoc) {
         let piPrice = pi.unit_price;
         let priceBasisNote = '';
 
-        if (po.price_basis === 'per_1000') {
-          const poQty = po.qty_ea ?? po.qty_ctn ?? null;
-          const piQty = pi.qty_ctn ?? null;
-          const rawRatio = (poQty && piQty && poQty > piQty) ? poQty / piQty : null;
-          const STD_PACKS = [10, 20, 25, 50, 100, 200, 250, 500, 1000];
-          const snapPs = rawRatio
-            ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
-            : null;
-          const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
-          if (ps && ps > 1) {
-            poPrice = po.unit_price * (ps / 1000);
-            priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
-          }
+        // Resolve pack size once — used for per_1000 normalisation on both sides
+        const poQty = po.qty_ea ?? po.qty_ctn ?? null;
+        const piQty = pi.qty_ctn ?? null;
+        const rawRatio = (poQty && piQty && poQty > piQty) ? poQty / piQty : null;
+        const STD_PACKS = [10, 20, 25, 50, 100, 200, 250, 500, 1000];
+        const snapPs = rawRatio
+          ? STD_PACKS.find(p => Math.abs(rawRatio - p) / p < 0.10) || Math.round(rawRatio)
+          : null;
+        const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
+
+        if (po.price_basis === 'per_1000' && ps && ps > 1) {
+          poPrice = po.unit_price * (ps / 1000);
+          priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
+        }
+
+        if (pi.price_basis === 'per_1000' && ps && ps > 1) {
+          piPrice = pi.unit_price * (ps / 1000);
         }
 
         const pVar = Math.abs(pct(poPrice, piPrice));
