@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.11
+// PO ↔ PI Checker — app.js v3.12
+// v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
 // v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
 // v3.9: Destination city + consignee name checks added
@@ -570,6 +571,7 @@ Notes:
 - total_cost should be the document grand total
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
 - IMPORTANT: Buyer item codes (our_code) on PIs often appear split across two lines due to narrow column widths — e.g. "H10029" on one line and "9" on the next line. Always reconstruct these into a single code (e.g. "H100299"). Huhtamaki codes follow the pattern H1XXXXX (7 characters total starting with H1).
+- IMPORTANT: PI tables often include carton measurement columns (L, W, H in cm) and CBM columns immediately after the quantity columns. Do NOT confuse these dimension values with quantities. Quantities are found in columns explicitly labelled CTNS (or CTN) and PCS (or EA). Carton counts are always whole numbers; dimensions like 52.5, 35.5, 43 are lengths in cm.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
