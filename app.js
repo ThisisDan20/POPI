@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.14
+// PO ↔ PI Checker — app.js v3.15
+// v3.15: Step 4 greys out when manual review not required; download button disabled until Step 4 complete
 // v3.14: Fix duplicate item-code matching (sequential by position, not map-overwrite); fix price normalisation (per_1000 → per_ea, not per_ctn)
 // v3.13: WARN→WARNING in status display; design update (5-step layout)
 // v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
@@ -1150,6 +1151,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       finalStatus.textContent = result.pass
         ? '✓ All checks passed. Ready to sign and download.'
         : 'Review required — see table above, then use Manual Review if needed.';
+      updateStepUI();
       return;
     }
 
@@ -1224,6 +1226,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     finalStatus.textContent = allPassed
       ? `✓ All ${batchResults.length} PO/PI pair(s) passed.`
       : `${batchResults.filter(r=>r.result&&!r.result.pass).length} of ${batchResults.length} pair(s) need review.`;
+    updateStepUI();
 
   } catch (err) {
     finalStatus.textContent = 'Error: ' + err.message;
@@ -1254,7 +1257,50 @@ document.getElementById('loadSample').addEventListener('click', () => {
   ]);
   renderMismatches([{ item: 'HL-B02', field: 'Qty', po: '532,000 EA', pi: '532 CTN → 532,000 ea', variance: '0.0%' }]);
   finalStatus.textContent = 'Sample data loaded. Use Manual Review to approve.';
+  updateStepUI();
 });
+
+// ─── Step UI state ───────────────────────────────────────────────────────────
+// Greys out Step 4 when not needed; disables download until signing is unlocked.
+function updateStepUI() {
+  const step4Card = document.querySelector('.card-step4');
+  const downloadBtn = document.getElementById('downloadSignedPi');
+  const needsManual = compareState.needsManual;
+  const isReady = compareState.passed;
+
+  // Step 4: grey when manual review not required
+  if (step4Card) {
+    if (!needsManual) {
+      step4Card.style.opacity = '0.4';
+      step4Card.style.pointerEvents = 'none';
+      step4Card.title = 'No manual review required — all checks passed.';
+    } else {
+      step4Card.style.opacity = '';
+      step4Card.style.pointerEvents = '';
+      step4Card.title = '';
+    }
+  }
+
+  // Download button: disabled until ready
+  if (downloadBtn) {
+    if (!isReady) {
+      downloadBtn.disabled = true;
+      downloadBtn.style.opacity = '0.4';
+      downloadBtn.style.cursor = 'not-allowed';
+      downloadBtn.title = needsManual
+        ? 'Complete Step 4 manual review first.'
+        : 'Run a comparison first.';
+    } else {
+      downloadBtn.disabled = false;
+      downloadBtn.style.opacity = '';
+      downloadBtn.style.cursor = '';
+      downloadBtn.title = '';
+    }
+  }
+}
+
+// Run on page load so download button starts disabled
+updateStepUI();
 
 document.getElementById('finalize').addEventListener('click', () => {
   if (compareState.passed) { finalStatus.textContent = '✓ Already passed. Ready to sign.'; return; }
@@ -1263,6 +1309,7 @@ document.getElementById('finalize').addEventListener('click', () => {
   if (override && confirm_) {
     compareState.passed = true;
     finalStatus.textContent = '✓ Manual override accepted. Ready to sign and download.';
+    updateStepUI();
   } else {
     finalStatus.textContent = 'Please tick both boxes to confirm manual review is complete.';
   }
