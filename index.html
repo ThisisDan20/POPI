@@ -34,55 +34,78 @@
 
         <div class="sidebar-divider"></div>
 
-        <div class="sidebar-steps">
-          <div class="sidebar-step-card" style="border-top: 3px solid #0077c8;">
-            <div class="sidebar-step-icon" style="background: #e6f1fb;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0077c8" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-            </div>
-            <div>
-              <div class="sidebar-step-label" style="color: #0077c8;">STEP 1</div>
-              <div class="sidebar-step-title">Upload PO</div>
-              <div class="sidebar-step-sub">Add PDF purchase order</div>
-            </div>
+        <!-- Step 1 -->
+        <div class="sidebar-step-card s1">
+          <div class="sidebar-step-icon" style="background:#e6f1fb;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0077c8" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
           </div>
-
-          <div class="sidebar-step-card" style="border-top: 3px solid #e8453c;">
-            <div class="sidebar-step-icon" style="background: #fce8e8;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#e8453c" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-            </div>
-            <div>
-              <div class="sidebar-step-label" style="color: #e8453c;">STEP 2</div>
-              <div class="sidebar-step-title">Upload PI</div>
-              <div class="sidebar-step-sub">Add PDF proforma invoice from supplier</div>
-            </div>
-          </div>
-
-          <div class="sidebar-step-card" style="border-top: 3px solid #e8a020;">
-            <div class="sidebar-step-icon" style="background: #fff3dc;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c47a10" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            </div>
-            <div>
-              <div class="sidebar-step-label" style="color: #c47a10;">STEP 3</div>
-              <div class="sidebar-step-title">Review comparison</div>
-              <div class="sidebar-step-sub">Prices, quantities &amp; codes checked automatically</div>
-            </div>
-          </div>
-
-          <div class="sidebar-step-card" style="border-top: 3px solid #a8d080;">
-            <div class="sidebar-step-icon" style="background: #eaf3de;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#639922" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            </div>
-            <div>
-              <div class="sidebar-step-label" style="color: #639922;">STEP 4</div>
-              <div class="sidebar-step-title">Approve &amp; send</div>
-              <div class="sidebar-step-sub">Download signed-approved PDF PI — ready to return to supplier</div>
-            </div>
+          <div>
+            <div class="sidebar-step-label">STEP 1</div>
+            <div class="sidebar-step-title">Upload PO</div>
+            <div class="sidebar-step-sub">Add PDF purchase order</div>
           </div>
         </div>
 
+        <!-- Step 2 -->
+        <div class="sidebar-step-card s2">
+          <div class="sidebar-step-icon" style="background:#fce8e8;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#e8453c" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+          </div>
+          <div>
+            <div class="sidebar-step-label">STEP 2</div>
+            <div class="sidebar-step-title">Upload PI</div>
+            <div class="sidebar-step-sub">Add PDF proforma invoice from supplier</div>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="sidebar-step-card s3">
+          <div class="sidebar-step-icon" style="background:#eeedfe;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#534AB7" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </div>
+          <div>
+            <div class="sidebar-step-label">STEP 3</div>
+            <div class="sidebar-step-title">Review comparison</div>
+            <div class="sidebar-step-sub">Prices, quantities &amp; codes checked automatically</div>
+          </div>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="sidebar-step-card s4">
+          <div class="sidebar-step-icon" style="background:#faeeda;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#BA7517" stroke-width="2"><polyline points="9,11 12,14 22,4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <div>
+            <div class="sidebar-step-label">STEP 4</div>
+            <div class="sidebar-step-title">Manual review</div>
+            <div class="sidebar-step-sub">Override variances &amp; confirm checks</div>
+          </div>
+        </div>
+
+        <!-- Step 5 -->
+        <div class="sidebar-step-card s5">
+          <div class="sidebar-step-icon" style="background:#eaf3de;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3B6D11" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </div>
+          <div>
+            <div class="sidebar-step-label">STEP 5</div>
+            <div class="sidebar-step-title">Sign &amp; Download PI</div>
+            <div class="sidebar-step-sub">Download signed PI ready to return to supplier</div>
+          </div>
+        </div>
+
+        <!-- Tip -->
         <div class="sidebar-tip">
-          Tip: upload multiple POs + PIs at once — POPI matches them automatically by PO number.
+          <div class="sidebar-tip-label">TIP</div>
+          Upload multiple POs + PIs at once — POPI matches them automatically by PO number.
         </div>
+
+        <!-- About -->
+        <div class="sidebar-about">
+          <div class="sidebar-about-label">ABOUT THIS TOOL</div>
+          Saves time on manual PO checks. POPI reads your PO and PI, compares every line, and tells you what matches and what doesn't. Once approved, download the signed PI.
+        </div>
+
       </aside>
 
       <!-- Main content -->
@@ -94,36 +117,58 @@
 
         <main class="layout">
 
-          <!-- 1) Upload -->
-          <section class="card">
-            <h2>1) Upload Files</h2>
+          <!-- Steps 1 & 2: Upload -->
+          <section class="card card-step1">
+            <div class="section-header">
+              <h2>Upload files</h2>
+            </div>
             <div class="upload-grid">
-              <div class="dropzone" id="poDropzone" role="button" tabindex="0" aria-label="PO upload zone">
-                <h3 style="color:#0077c8;">PO File (Purchase Order)</h3>
-                <p>Drag &amp; drop or click · PDF or image</p>
-                <input type="file" id="poFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
-                <button type="button" id="poBrowse">Choose PO file(s)</button>
-                <p class="file-list" id="poFileList">No files selected.</p>
+
+              <div class="upload-col">
+                <div class="upload-step-label">
+                  <span class="step-badge step-badge-1">STEP 1</span>
+                  <span class="upload-title">Upload PO</span>
+                </div>
+                <div class="dropzone" id="poDropzone" role="button" tabindex="0" aria-label="PO upload zone">
+                  <h3 style="color:#0077c8;">PO File (Purchase Order)</h3>
+                  <p>Drag &amp; drop or click · PDF or image</p>
+                  <input type="file" id="poFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
+                  <button type="button" id="poBrowse">Choose PO file(s)</button>
+                  <p class="file-list" id="poFileList">No files selected.</p>
+                </div>
               </div>
-              <div class="dropzone" id="piDropzone" role="button" tabindex="0" aria-label="PI upload zone">
-                <h3 style="color:#e8453c;">PI File (Proforma Invoice)</h3>
-                <p>Drag &amp; drop or click · PDF or image</p>
-                <input type="file" id="piFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
-                <button type="button" id="piBrowse">Choose PI file(s)</button>
-                <p class="file-list" id="piFileList">No files selected.</p>
+
+              <div class="upload-col">
+                <div class="upload-step-label">
+                  <span class="step-badge step-badge-2">STEP 2</span>
+                  <span class="upload-title">Upload PI</span>
+                </div>
+                <div class="dropzone" id="piDropzone" role="button" tabindex="0" aria-label="PI upload zone">
+                  <h3 style="color:#e8453c;">PI File (Proforma Invoice)</h3>
+                  <p>Drag &amp; drop or click · PDF or image</p>
+                  <input type="file" id="piFile" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
+                  <button type="button" id="piBrowse">Choose PI file(s)</button>
+                  <p class="file-list" id="piFileList">No files selected.</p>
+                </div>
               </div>
+
             </div>
             <div class="actions">
-              <button id="runCompare" class="primary">▶ Run Comparison</button>
+              <button id="runCompare">▶ Run Comparison</button>
               <button id="loadSample">Load sample data</button>
             </div>
             <p class="hint">Max 5 MB per file · PDFs and images (JPG/PNG) both supported · Up to 20 files per batch</p>
           </section>
 
-          <!-- 2 & 3) Results + Manual Review -->
-          <section class="card split">
-            <div>
-              <h2>2) Match Summary</h2>
+          <!-- Steps 3, 4, 5 -->
+          <div class="lower-split">
+
+            <!-- Step 3: Match Summary -->
+            <section class="card card-step3">
+              <div class="section-header">
+                <span class="step-badge step-badge-3">STEP 3</span>
+                <h2>Match Summary</h2>
+              </div>
               <table>
                 <thead><tr><th>Check</th><th>Status</th><th>Notes</th></tr></thead>
                 <tbody id="summaryBody">
@@ -140,50 +185,49 @@
                   <tr><td colspan="5" class="muted">No mismatches yet.</td></tr>
                 </tbody>
               </table>
+            </section>
+
+            <!-- Right column: Steps 4 & 5 -->
+            <div class="right-col">
+
+              <!-- Step 4: Manual Review -->
+              <section class="card card-step4">
+                <div class="section-header">
+                  <span class="step-badge step-badge-4">STEP 4</span>
+                  <h2>Manual Review</h2>
+                </div>
+                <div class="checklist">
+                  <label><input type="checkbox" id="manualOverride" /> Approve quantity variance override</label>
+                  <label><input type="checkbox" id="confirmReview" /> Confirm manual checks completed</label>
+                </div>
+                <button id="finalize">Finalize &amp; Approve</button>
+                <p id="finalStatus" class="hint">Review issues in Step 3, then confirm above to proceed to Step 5.</p>
+              </section>
+
+              <!-- Step 5: Sign & Download -->
+              <section class="card card-step5">
+                <div class="section-header">
+                  <span class="step-badge step-badge-5">STEP 5</span>
+                  <h2>Sign &amp; Download PI</h2>
+                </div>
+                <p class="hint" style="margin-top:0; margin-bottom:14px;">Signature block is stamped onto the PI PDF once checks pass.</p>
+                <div class="sign-fields">
+                  <label>Company</label>
+                  <select id="companySelect">
+                    <option>Huhtamaki Henderson Ltd.</option>
+                    <option>Huhtamaki Australia Pty Ltd.</option>
+                    <option>Huhtamaki Foodservice Packaging, Oceania</option>
+                  </select>
+                  <label>Your Name</label>
+                  <input type="text" id="signerName" placeholder="e.g. Dan Roberts" />
+                  <label>Your Position</label>
+                  <input type="text" id="signerPosition" placeholder="e.g. Procurement Manager" />
+                </div>
+                <button id="downloadSignedPi">⬇ Download Signed PI PDF</button>
+              </section>
+
             </div>
-
-            <div>
-              <h2>3) Manual Review</h2>
-              <div class="checklist">
-                <label><input type="checkbox" id="manualOverride" /> Approve quantity variance override</label>
-                <label><input type="checkbox" id="confirmReview" /> Confirm manual checks completed</label>
-              </div>
-              <button id="finalize">Finalize &amp; Approve</button>
-              <p id="finalStatus" class="hint">Awaiting comparison.</p>
-            </div>
-          </section>
-
-          <!-- 4) Signing -->
-          <section class="card split">
-            <div>
-              <h2>4) Sign &amp; Download PI</h2>
-              <p class="hint" style="margin-top:0; margin-bottom:14px;">Signature block is stamped onto the PI PDF once checks pass.</p>
-
-              <div class="sign-fields">
-                <label>Company</label>
-                <select id="companySelect">
-                  <option>Huhtamaki Henderson Ltd</option>
-                  <option>Huhtamaki Australia Pty Ltd</option>
-                  <option>Huhtamaki Foodservice Packaging, Oceania</option>
-                </select>
-
-                <label>Your Name</label>
-                <input type="text" id="signerName" placeholder="e.g. Dan Roberts" />
-
-                <label>Your Position</label>
-                <input type="text" id="signerPosition" placeholder="e.g. Procurement Manager" />
-              </div>
-
-              <button id="downloadSignedPi">⬇ Download Signed PI PDF</button>
-            </div>
-            <div>
-              <h2>About this tool</h2>
-              <div class="sample">
-                <p style="margin:0 0 8px;">Saves time on manual PO checks. POPI reads your PO and PI, compares every line, and tells you what matches and what doesn't. Once approved, download the signed PI.</p>
-                <p style="margin:0; color:var(--muted); font-size:0.85rem;">Supported: PDF, JPG, PNG (up to 5 MB)</p>
-              </div>
-            </div>
-          </section>
+          </div>
 
         </main>
       </div>
