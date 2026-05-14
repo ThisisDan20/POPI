@@ -1,4 +1,6 @@
-// PO ↔ PI Checker — app.js v3.12
+// PO ↔ PI Checker — app.js v3.14
+// v3.14: Fix duplicate item-code matching (sequential by position, not map-overwrite); fix price normalisation (per_1000 → per_ea, not per_ctn)
+// v3.13: WARN→WARNING in status display; design update (5-step layout)
 // v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
 // v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
@@ -688,7 +690,7 @@ function compare(poDoc, piDoc) {
   function headerCheck(label, poVal, piVal) {
     if (!poVal && !piVal) return;
     if (!poVal || !piVal) {
-      checks.push({ check: label, status: 'WARN', className: 'warn',
+      checks.push({ check: label, status: 'WARNING', className: 'warn',
         note: `Could not extract from ${!poVal ? 'PO' : 'PI'} — verify manually.` });
       needsManual = true;
       return;
@@ -723,7 +725,7 @@ function compare(poDoc, piDoc) {
       });
       if (!nameOk) { pass = false; needsManual = true; }
     } else {
-      checks.push({ check: 'Consignee', status: 'WARN', className: 'warn',
+      checks.push({ check: 'Consignee', status: 'WARNING', className: 'warn',
         note: 'Consignee not found on PI — verify manually.' });
       needsManual = true;
     }
@@ -734,11 +736,11 @@ function compare(poDoc, piDoc) {
     const poCity = pf.shipToCity || null;
     const piCity = if_.consigneeCity || null;
     if (!poCity) {
-      checks.push({ check: 'Destination', status: 'WARN', className: 'warn',
+      checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
         note: 'Destination city not found on PO — verify manually.' });
       needsManual = true;
     } else if (!piCity) {
-      checks.push({ check: 'Destination', status: 'WARN', className: 'warn',
+      checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
         note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
       needsManual = true;
     } else {
@@ -774,23 +776,36 @@ function compare(poDoc, piDoc) {
   const piItems = piDoc.items || [];
 
   if (poItems.length === 0 && piItems.length === 0) {
-    checks.push({ check: 'Line Items', status: 'WARN', className: 'warn',
+    checks.push({ check: 'Line Items', status: 'WARNING', className: 'warn',
       note: 'No line items extracted — header checks only.' });
     needsManual = true;
   } else {
-    const piMap = {};
+    // Build ordered queues per code — handles duplicate item codes across lines
+    const piCodeLists = {};
     for (const r of piItems) {
-      for (const c of r.alt_codes) { if (c) piMap[c] = r; }
+      for (const c of r.alt_codes) {
+        if (c) { if (!piCodeLists[c]) piCodeLists[c] = []; piCodeLists[c].push(r); }
+      }
+    }
+    const piCodeIdx = {}; // next index to consume per code
+
+    function nextPiMatch(codes) {
+      for (const c of (codes || [])) {
+        const list = piCodeLists[c];
+        if (!list) continue;
+        const idx = piCodeIdx[c] || 0;
+        if (idx < list.length) { piCodeIdx[c] = idx + 1; return list[idx]; }
+      }
+      return null;
     }
 
     let qtyIssues = 0;
 
     for (const po of poItems) {
-      let pi = null;
-      for (const c of po.alt_codes) { if (piMap[c]) { pi = piMap[c]; break; } }
+      let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
-        if (ref) { pi = piMap[ref.supplier_code] || piMap[ref.our_code]; }
+        if (ref) { pi = nextPiMatch([ref.supplier_code, ref.our_code].filter(Boolean)); }
       }
 
       if (!pi) {
@@ -845,13 +860,19 @@ function compare(poDoc, piDoc) {
           : null;
         const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
 
-        if (po.price_basis === 'per_1000' && ps && ps > 1) {
-          poPrice = po.unit_price * (ps / 1000);
-          priceBasisNote = ' (' + po.unit_price + '/1000 x ' + ps + 'pcs = ' + poPrice.toFixed(4) + '/ctn)';
+        // Normalise both prices to per_ea for consistent comparison
+        if (po.price_basis === 'per_1000') {
+          poPrice = po.unit_price / 1000;
+          priceBasisNote = ' (' + po.unit_price + '/1000 = ' + poPrice.toFixed(6) + '/ea)';
+        } else if (po.price_basis === 'per_ctn' && ps) {
+          poPrice = po.unit_price / ps;
+          priceBasisNote = ' (' + po.unit_price + '/ctn ÷ ' + ps + ' = ' + poPrice.toFixed(6) + '/ea)';
         }
 
-        if (pi.price_basis === 'per_1000' && ps && ps > 1) {
-          piPrice = pi.unit_price * (ps / 1000);
+        if (pi.price_basis === 'per_1000') {
+          piPrice = pi.unit_price / 1000;
+        } else if (pi.price_basis === 'per_ctn' && ps) {
+          piPrice = pi.unit_price / ps;
         }
 
         const pVar = Math.abs(pct(poPrice, piPrice));
