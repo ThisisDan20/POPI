@@ -1,6 +1,7 @@
 // PO ↔ PI Checker — app.js v3.16
-// v3.16: Prompt fix — pack_size must be total pieces per carton (not bags); populate qty_ea from explicit PCS column
-// v3.15: Option B file display — coloured rows with filename, size, remove button
+// v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
+// v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
+// v3.14: Fix duplicate item-code matching; fix price normalisation
 // v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
 // v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
@@ -949,15 +950,42 @@ function renderMismatches(rows) {
 }
 
 // ─── File selection & dropzones ───────────────────────────────────────────────
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function renderFileList(kind, list) {
+  const el = kind === 'po' ? poFileList : piFileList;
+  const rowCls  = kind === 'po' ? 'file-row-po' : 'file-row-pi';
+  const nameCls = kind === 'po' ? 'file-name-po' : 'file-name-pi';
+  if (!list.length) {
+    el.innerHTML = '<span class="no-files">No files selected.</span>';
+    return;
+  }
+  el.innerHTML = list.map((f, i) => `
+    <div class="file-row ${rowCls}">
+      <span class="file-row-icon">📄</span>
+      <span class="file-name ${nameCls}" title="${f.name}">${f.name}</span>
+      <span class="file-size">${formatBytes(f.size)}</span>
+      <span class="file-remove" data-kind="${kind}" data-idx="${i}" title="Remove">×</span>
+    </div>`).join('');
+  el.querySelectorAll('.file-remove').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx);
+      if (kind === 'po') { poFiles.splice(idx, 1); renderFileList('po', poFiles); }
+      else               { piFiles.splice(idx, 1); renderFileList('pi', piFiles); }
+    });
+  });
+}
+
 function setFiles(kind, files) {
   const list = Array.from(files || []);
-  if (kind === 'po') {
-    poFiles = list;
-    poFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
-  } else {
-    piFiles = list;
-    piFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
-  }
+  if (kind === 'po') poFiles = list;
+  else               piFiles = list;
+  renderFileList(kind, list);
   if (list.length > 0) {
     _uploadCounter += list.length;
     if (_uploadCounter >= _quizThreshold) {
@@ -972,8 +1000,8 @@ function clearFiles() {
   poFiles = []; piFiles = [];
   if (poFileInput) poFileInput.value = '';
   if (piFileInput) piFileInput.value = '';
-  poFileList.textContent = 'No files selected.';
-  piFileList.textContent = 'No files selected.';
+  renderFileList('po', []);
+  renderFileList('pi', []);
 }
 
 function setupDropzone(kind, dropEl, inputEl, browseEl) {
@@ -1152,6 +1180,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       finalStatus.textContent = result.pass
         ? '✓ All checks passed. Ready to sign and download.'
         : 'Review required — see table above, then use Manual Review if needed.';
+      updateStepUI();
       return;
     }
 
@@ -1226,6 +1255,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     finalStatus.textContent = allPassed
       ? `✓ All ${batchResults.length} PO/PI pair(s) passed.`
       : `${batchResults.filter(r=>r.result&&!r.result.pass).length} of ${batchResults.length} pair(s) need review.`;
+    updateStepUI();
 
   } catch (err) {
     finalStatus.textContent = 'Error: ' + err.message;
@@ -1256,7 +1286,43 @@ document.getElementById('loadSample').addEventListener('click', () => {
   ]);
   renderMismatches([{ item: 'HL-B02', field: 'Qty', po: '532,000 EA', pi: '532 CTN → 532,000 ea', variance: '0.0%' }]);
   finalStatus.textContent = 'Sample data loaded. Use Manual Review to approve.';
+  updateStepUI();
 });
+
+// ─── Step UI state ────────────────────────────────────────────────────────────
+function updateStepUI() {
+  const step4Card  = document.querySelector('.card-step4');
+  const downloadBtn = document.getElementById('downloadSignedPi');
+  const needsManual = compareState.needsManual;
+  const isReady     = compareState.passed;
+
+  if (step4Card) {
+    if (!needsManual) {
+      step4Card.style.opacity = '0.4';
+      step4Card.style.pointerEvents = 'none';
+      step4Card.title = 'No manual review required — all checks passed.';
+    } else {
+      step4Card.style.opacity = '';
+      step4Card.style.pointerEvents = '';
+      step4Card.title = '';
+    }
+  }
+
+  if (downloadBtn) {
+    if (!isReady) {
+      downloadBtn.disabled = true;
+      downloadBtn.style.opacity = '0.4';
+      downloadBtn.style.cursor = 'not-allowed';
+      downloadBtn.title = needsManual ? 'Complete Step 4 manual review first.' : 'Run a comparison first.';
+    } else {
+      downloadBtn.disabled = false;
+      downloadBtn.style.opacity = '';
+      downloadBtn.style.cursor = '';
+      downloadBtn.title = '';
+    }
+  }
+}
+updateStepUI();
 
 document.getElementById('finalize').addEventListener('click', () => {
   if (compareState.passed) { finalStatus.textContent = '✓ Already passed. Ready to sign.'; return; }
@@ -1265,6 +1331,7 @@ document.getElementById('finalize').addEventListener('click', () => {
   if (override && confirm_) {
     compareState.passed = true;
     finalStatus.textContent = '✓ Manual override accepted. Ready to sign and download.';
+    updateStepUI();
   } else {
     finalStatus.textContent = 'Please tick both boxes to confirm manual review is complete.';
   }
