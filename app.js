@@ -1,6 +1,6 @@
-// PO ↔ PI Checker — app.js v3.15
+// PO ↔ PI Checker — app.js v3.16
+// v3.16: Prompt fix — pack_size must be total pieces per carton (not bags); populate qty_ea from explicit PCS column
 // v3.15: Option B file display — coloured rows with filename, size, remove button
-// v3.14: Fix duplicate item-code matching; fix price normalisation (per_1000 → per_ea, not per_ctn)
 // v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
 // v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
@@ -574,6 +574,8 @@ Notes:
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
 - IMPORTANT: Buyer item codes (our_code) on PIs often appear split across two lines due to narrow column widths — e.g. "H10029" on one line and "9" on the next line. Always reconstruct these into a single code (e.g. "H100299"). Huhtamaki codes follow the pattern H1XXXXX (7 characters total starting with H1).
 - IMPORTANT: PI tables often include carton measurement columns (L, W, H in cm) and CBM columns immediately after the quantity columns. Do NOT confuse these dimension values with quantities. Quantities are found in columns explicitly labelled CTNS (or CTN) and PCS (or EA). Carton counts are always whole numbers; dimensions like 52.5, 35.5, 43 are lengths in cm.
+- IMPORTANT: pack_size_ea_per_ctn must be the total number of INDIVIDUAL PIECES (units) per outer carton — not the number of inner bags, inner packs, or sleeves per carton. For example, if a carton contains 20 bags of 250 pieces each, pack_size_ea_per_ctn = 5000, not 20.
+- IMPORTANT: PI tables sometimes have multiple quantity columns — e.g. cases, bags/inner packs, and total pcs/pieces. Always populate qty_ctn from the cases/carton column, and populate qty_ea from the total pcs/pieces column if one is explicitly present. Do not leave qty_ea null if a PCS or pieces total column exists.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -947,52 +949,15 @@ function renderMismatches(rows) {
 }
 
 // ─── File selection & dropzones ───────────────────────────────────────────────
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function renderFileList(kind, list) {
-  const el = kind === 'po' ? poFileList : piFileList;
-  const cls = kind === 'po' ? 'file-row-po' : 'file-row-pi';
-  const nameCls = kind === 'po' ? 'file-name-po' : 'file-name-pi';
-  if (!list.length) {
-    el.innerHTML = '<span class="no-files">No files selected.</span>';
-    return;
-  }
-  el.innerHTML = list.map((f, i) => `
-    <div class="file-row ${cls}" data-kind="${kind}" data-idx="${i}">
-      <span class="file-row-icon">📄</span>
-      <span class="file-name ${nameCls}" title="${f.name}">${f.name}</span>
-      <span class="file-size">${formatBytes(f.size)}</span>
-      <span class="file-remove" data-kind="${kind}" data-idx="${i}" title="Remove">×</span>
-    </div>`).join('');
-
-  // Wire up remove buttons
-  el.querySelectorAll('.file-remove').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const idx = parseInt(btn.dataset.idx);
-      if (kind === 'po') {
-        poFiles.splice(idx, 1);
-        renderFileList('po', poFiles);
-      } else {
-        piFiles.splice(idx, 1);
-        renderFileList('pi', piFiles);
-      }
-    });
-  });
-}
-
 function setFiles(kind, files) {
   const list = Array.from(files || []);
   if (kind === 'po') {
     poFiles = list;
+    poFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
   } else {
     piFiles = list;
+    piFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
   }
-  renderFileList(kind, list);
   if (list.length > 0) {
     _uploadCounter += list.length;
     if (_uploadCounter >= _quizThreshold) {
@@ -1007,8 +972,8 @@ function clearFiles() {
   poFiles = []; piFiles = [];
   if (poFileInput) poFileInput.value = '';
   if (piFileInput) piFileInput.value = '';
-  renderFileList('po', []);
-  renderFileList('pi', []);
+  poFileList.textContent = 'No files selected.';
+  piFileList.textContent = 'No files selected.';
 }
 
 function setupDropzone(kind, dropEl, inputEl, browseEl) {
