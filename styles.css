@@ -160,7 +160,54 @@ td { border-bottom: 1px solid #edf1f7; padding: 8px 10px; text-align: left; }
 .checklist { display: grid; gap: 10px; margin: 4px 0 14px; }
 .hint { color: var(--muted); font-size: 0.88rem; margin-top: 10px; }
 .subheading { margin: 14px 0 8px; font-size: 1rem; font-weight: 600; }
-.file-list { margin-top: 8px; color: var(--muted); font-size: 0.88rem; word-break: break-word; }
+/* ── File rows (Option B upload display) ── */
+#poFileList, #piFileList {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+}
+
+.no-files { color: var(--muted); font-size: 0.88rem; }
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-size: 0.84rem;
+}
+
+.file-row-po { background: #ddeeff; border: 1px solid #85b7eb; }
+.file-row-pi { background: #fde0e0; border: 1px solid #f09595; }
+
+.file-row-icon { flex-shrink: 0; font-size: 14px; }
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.file-name-po { color: #0056a0; }
+.file-name-pi { color: #b52e24; }
+
+.file-size { flex-shrink: 0; font-size: 0.78rem; color: var(--muted); }
+
+.file-remove {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0 2px;
+  transition: opacity 0.15s;
+}
+.file-remove:hover { opacity: 0.9; }
 
 @media (max-width: 960px) { .lower-split { grid-template-columns: 1fr; } }
 @media (max-width: 860px) { .upload-grid { grid-template-columns: 1fr; } .sidebar { width: 200px; } }
