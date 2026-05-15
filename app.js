@@ -1,7 +1,6 @@
 // PO ↔ PI Checker — app.js v3.15
-// v3.15: Step 4 greys out when manual review not required; download button disabled until Step 4 complete
-// v3.14: Fix duplicate item-code matching (sequential by position, not map-overwrite); fix price normalisation (per_1000 → per_ea, not per_ctn)
-// v3.13: WARN→WARNING in status display; design update (5-step layout)
+// v3.15: Option B file display — coloured rows with filename, size, remove button
+// v3.14: Fix duplicate item-code matching; fix price normalisation (per_1000 → per_ea, not per_ctn)
 // v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
 // v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
 // v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
@@ -948,15 +947,52 @@ function renderMismatches(rows) {
 }
 
 // ─── File selection & dropzones ───────────────────────────────────────────────
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function renderFileList(kind, list) {
+  const el = kind === 'po' ? poFileList : piFileList;
+  const cls = kind === 'po' ? 'file-row-po' : 'file-row-pi';
+  const nameCls = kind === 'po' ? 'file-name-po' : 'file-name-pi';
+  if (!list.length) {
+    el.innerHTML = '<span class="no-files">No files selected.</span>';
+    return;
+  }
+  el.innerHTML = list.map((f, i) => `
+    <div class="file-row ${cls}" data-kind="${kind}" data-idx="${i}">
+      <span class="file-row-icon">📄</span>
+      <span class="file-name ${nameCls}" title="${f.name}">${f.name}</span>
+      <span class="file-size">${formatBytes(f.size)}</span>
+      <span class="file-remove" data-kind="${kind}" data-idx="${i}" title="Remove">×</span>
+    </div>`).join('');
+
+  // Wire up remove buttons
+  el.querySelectorAll('.file-remove').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx);
+      if (kind === 'po') {
+        poFiles.splice(idx, 1);
+        renderFileList('po', poFiles);
+      } else {
+        piFiles.splice(idx, 1);
+        renderFileList('pi', piFiles);
+      }
+    });
+  });
+}
+
 function setFiles(kind, files) {
   const list = Array.from(files || []);
   if (kind === 'po') {
     poFiles = list;
-    poFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
   } else {
     piFiles = list;
-    piFileList.textContent = list.length ? list.map(f => f.name).join(', ') : 'No files selected.';
   }
+  renderFileList(kind, list);
   if (list.length > 0) {
     _uploadCounter += list.length;
     if (_uploadCounter >= _quizThreshold) {
@@ -971,8 +1007,8 @@ function clearFiles() {
   poFiles = []; piFiles = [];
   if (poFileInput) poFileInput.value = '';
   if (piFileInput) piFileInput.value = '';
-  poFileList.textContent = 'No files selected.';
-  piFileList.textContent = 'No files selected.';
+  renderFileList('po', []);
+  renderFileList('pi', []);
 }
 
 function setupDropzone(kind, dropEl, inputEl, browseEl) {
@@ -1151,7 +1187,6 @@ document.getElementById('runCompare').addEventListener('click', async () => {
       finalStatus.textContent = result.pass
         ? '✓ All checks passed. Ready to sign and download.'
         : 'Review required — see table above, then use Manual Review if needed.';
-      updateStepUI();
       return;
     }
 
@@ -1226,7 +1261,6 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     finalStatus.textContent = allPassed
       ? `✓ All ${batchResults.length} PO/PI pair(s) passed.`
       : `${batchResults.filter(r=>r.result&&!r.result.pass).length} of ${batchResults.length} pair(s) need review.`;
-    updateStepUI();
 
   } catch (err) {
     finalStatus.textContent = 'Error: ' + err.message;
@@ -1257,50 +1291,7 @@ document.getElementById('loadSample').addEventListener('click', () => {
   ]);
   renderMismatches([{ item: 'HL-B02', field: 'Qty', po: '532,000 EA', pi: '532 CTN → 532,000 ea', variance: '0.0%' }]);
   finalStatus.textContent = 'Sample data loaded. Use Manual Review to approve.';
-  updateStepUI();
 });
-
-// ─── Step UI state ───────────────────────────────────────────────────────────
-// Greys out Step 4 when not needed; disables download until signing is unlocked.
-function updateStepUI() {
-  const step4Card = document.querySelector('.card-step4');
-  const downloadBtn = document.getElementById('downloadSignedPi');
-  const needsManual = compareState.needsManual;
-  const isReady = compareState.passed;
-
-  // Step 4: grey when manual review not required
-  if (step4Card) {
-    if (!needsManual) {
-      step4Card.style.opacity = '0.4';
-      step4Card.style.pointerEvents = 'none';
-      step4Card.title = 'No manual review required — all checks passed.';
-    } else {
-      step4Card.style.opacity = '';
-      step4Card.style.pointerEvents = '';
-      step4Card.title = '';
-    }
-  }
-
-  // Download button: disabled until ready
-  if (downloadBtn) {
-    if (!isReady) {
-      downloadBtn.disabled = true;
-      downloadBtn.style.opacity = '0.4';
-      downloadBtn.style.cursor = 'not-allowed';
-      downloadBtn.title = needsManual
-        ? 'Complete Step 4 manual review first.'
-        : 'Run a comparison first.';
-    } else {
-      downloadBtn.disabled = false;
-      downloadBtn.style.opacity = '';
-      downloadBtn.style.cursor = '';
-      downloadBtn.title = '';
-    }
-  }
-}
-
-// Run on page load so download button starts disabled
-updateStepUI();
 
 document.getElementById('finalize').addEventListener('click', () => {
   if (compareState.passed) { finalStatus.textContent = '✓ Already passed. Ready to sign.'; return; }
@@ -1309,7 +1300,6 @@ document.getElementById('finalize').addEventListener('click', () => {
   if (override && confirm_) {
     compareState.passed = true;
     finalStatus.textContent = '✓ Manual override accepted. Ready to sign and download.';
-    updateStepUI();
   } else {
     finalStatus.textContent = 'Please tick both boxes to confirm manual review is complete.';
   }
