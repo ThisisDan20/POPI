@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.16
+// PO ↔ PI Checker — app.js v3.17
+// v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
 // v3.14: Fix duplicate item-code matching; fix price normalisation
@@ -986,6 +987,7 @@ function setFiles(kind, files) {
   if (kind === 'po') poFiles = list;
   else               piFiles = list;
   renderFileList(kind, list);
+  updateStepUI();
   if (list.length > 0) {
     _uploadCounter += list.length;
     if (_uploadCounter >= _quizThreshold) {
@@ -1002,6 +1004,7 @@ function clearFiles() {
   if (piFileInput) piFileInput.value = '';
   renderFileList('po', []);
   renderFileList('pi', []);
+  updateStepUI();
 }
 
 function setupDropzone(kind, dropEl, inputEl, browseEl) {
@@ -1291,18 +1294,20 @@ document.getElementById('loadSample').addEventListener('click', () => {
 
 // ─── Step UI state ────────────────────────────────────────────────────────────
 function updateStepUI() {
-  const step4Card  = document.querySelector('.card-step4');
+  const step4Card   = document.querySelector('.card-step4');
+  const step5Card   = document.querySelector('.card-step5');
   const downloadBtn = document.getElementById('downloadSignedPi');
+  const runBtn      = document.getElementById('runCompare');
   const needsManual = compareState.needsManual;
   const isReady     = compareState.passed;
+  const hasFiles    = (poFiles.length > 0) && (piFiles.length > 0);
 
+  // Step 4: grey when no manual review needed or already approved
   if (step4Card) {
     if (!needsManual || isReady) {
       step4Card.style.opacity = '0.4';
       step4Card.style.pointerEvents = 'none';
-      step4Card.title = isReady && !needsManual
-        ? 'No manual review required — all checks passed.'
-        : 'All checks passed — no manual review needed.';
+      step4Card.title = 'All checks passed — no manual review needed.';
     } else {
       step4Card.style.opacity = '';
       step4Card.style.pointerEvents = '';
@@ -1310,18 +1315,30 @@ function updateStepUI() {
     }
   }
 
-  if (downloadBtn) {
+  // Step 5: grey until approved
+  if (step5Card) {
     if (!isReady) {
-      downloadBtn.disabled = true;
-      downloadBtn.style.opacity = '0.4';
-      downloadBtn.style.cursor = 'not-allowed';
-      downloadBtn.title = needsManual ? 'Complete Step 4 manual review first.' : 'Run a comparison first.';
+      step5Card.style.opacity = '0.4';
+      step5Card.style.pointerEvents = 'none';
+      step5Card.title = needsManual ? 'Complete Step 4 manual review first.' : 'Run a comparison first.';
     } else {
-      downloadBtn.disabled = false;
-      downloadBtn.style.opacity = '';
-      downloadBtn.style.cursor = '';
-      downloadBtn.title = '';
+      step5Card.style.opacity = '';
+      step5Card.style.pointerEvents = '';
+      step5Card.title = '';
     }
+  }
+
+  // Download button: disabled until approved (belt-and-braces with Step 5 greying)
+  if (downloadBtn) {
+    downloadBtn.disabled = !isReady;
+    downloadBtn.style.opacity = isReady ? '' : '0.4';
+    downloadBtn.style.cursor  = isReady ? '' : 'not-allowed';
+  }
+
+  // Run Comparison: faded until both PO and PI files selected
+  if (runBtn) {
+    runBtn.style.opacity = hasFiles ? '' : '0.4';
+    runBtn.style.cursor  = hasFiles ? '' : 'not-allowed';
   }
 }
 updateStepUI();
