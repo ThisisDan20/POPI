@@ -1297,10 +1297,12 @@ function updateStepUI() {
   const isReady     = compareState.passed;
 
   if (step4Card) {
-    if (!needsManual) {
+    if (!needsManual || isReady) {
       step4Card.style.opacity = '0.4';
       step4Card.style.pointerEvents = 'none';
-      step4Card.title = 'No manual review required — all checks passed.';
+      step4Card.title = isReady && !needsManual
+        ? 'No manual review required — all checks passed.'
+        : 'All checks passed — no manual review needed.';
     } else {
       step4Card.style.opacity = '';
       step4Card.style.pointerEvents = '';
