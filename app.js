@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.19
+// PO ↔ PI Checker — app.js v3.20
+// v3.20: Post-extraction sanity checks — discard qty_ea if inconsistent with qty_ctn×pack_size; discard suspiciously small qty (Rel# confusion)
 // v3.19: Prompt fix — ignore Rel# as qty; recognise ct/cts/case as carton units
 // v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
@@ -812,7 +813,7 @@ function compare(poDoc, piDoc) {
 
     let qtyIssues = 0;
 
-    for (const po of poItems) {
+    for (let po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
@@ -827,6 +828,32 @@ function compare(poDoc, piDoc) {
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
+
+      // ── Sanity check: PI qty_ctn × pack_size should ≈ qty_ea ──────────────
+      // If all three are present and they don't reconcile, one value is wrong.
+      // Most likely qty_ea was pulled from a dimension/CBM column or Rel# was
+      // mistaken for qty. Drop the inconsistent value and log a warning.
+      const piPs = ref?.pack_size_ea || pi.pack_size;
+      if (pi.qty_ctn != null && pi.qty_ea != null && piPs && piPs > 1) {
+        const implied = pi.qty_ctn * piPs;
+        const sanityVar = Math.abs(implied - pi.qty_ea) / Math.max(implied, pi.qty_ea);
+        if (sanityVar > 0.20) {
+          console.warn(`[POPI] Sanity fail for ${pi.item_code || po.item_code}: qty_ctn(${pi.qty_ctn}) × pack_size(${piPs}) = ${implied} but qty_ea=${pi.qty_ea} (${(sanityVar*100).toFixed(0)}% off) — discarding qty_ea`);
+          pi = { ...pi, qty_ea: null }; // trust qty_ctn + pack_size, discard bad qty_ea
+        }
+      }
+      // Also catch the Rel#-as-qty pattern: if qty_ea is a suspiciously small
+      // integer (≤ 10) but qty_ctn is large, the small value is almost certainly
+      // a release or sequence number, not a piece count.
+      if (pi.qty_ea != null && pi.qty_ea <= 10 && (pi.qty_ctn == null || pi.qty_ctn > 10)) {
+        console.warn(`[POPI] Sanity fail: qty_ea=${pi.qty_ea} looks like a Rel# — discarding`);
+        pi = { ...pi, qty_ea: null };
+      }
+      // Same check for PO qty_ea (Rel# confusion on PO side)
+      if (po.qty_ea != null && po.qty_ea <= 10 && (po.qty_ctn == null || po.qty_ctn > 10)) {
+        console.warn(`[POPI] Sanity fail on PO: qty_ea=${po.qty_ea} looks like a Rel# — discarding`);
+        po = { ...po, qty_ea: null };
+      }
 
       let poQtyEa = null;
       let piQtyEa = null;
