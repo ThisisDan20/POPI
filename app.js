@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.17
+// PO ↔ PI Checker — app.js v3.18
+// v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
@@ -578,6 +579,9 @@ Notes:
 - IMPORTANT: PI tables often include carton measurement columns (L, W, H in cm) and CBM columns immediately after the quantity columns. Do NOT confuse these dimension values with quantities. Quantities are found in columns explicitly labelled CTNS (or CTN) and PCS (or EA). Carton counts are always whole numbers; dimensions like 52.5, 35.5, 43 are lengths in cm.
 - IMPORTANT: pack_size_ea_per_ctn must be the total number of INDIVIDUAL PIECES (units) per outer carton — not the number of inner bags, inner packs, or sleeves per carton. For example, if a carton contains 20 bags of 250 pieces each, pack_size_ea_per_ctn = 5000, not 20.
 - IMPORTANT: PI tables sometimes have multiple quantity columns — e.g. cases, bags/inner packs, and total pcs/pieces. Always populate qty_ctn from the cases/carton column, and populate qty_ea from the total pcs/pieces column if one is explicitly present. Do not leave qty_ea null if a PCS or pieces total column exists.
+- For POs where the Unit column shows CTN/xxx (e.g. CTN/1000, CTN/500, CTN/300, CTN/4, CTN/6): set qty_ctn = the order quantity, set qty_ea = null, set pack_size_ea_per_ctn = xxx (the number after "CTN/"). Set price_basis = per_ctn. These are carton-based POs — the order quantity IS the carton count, not individual units.
+- PKT/nn or PKT/xx in item descriptions refers only to inner bag or inner pack size — this is NOT pack_size_ea_per_ctn. Always derive pack_size_ea_per_ctn from the CTN/xxx unit notation, not from PKT/nn.
+- When comparing PO and PI prices: if both documents price per carton (per_ctn), verify the prices match directly at the per-carton level. Do not divide per-carton prices by pack size.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -821,28 +825,39 @@ function compare(poDoc, piDoc) {
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
 
-      let poQtyEa = po.qty_ea ?? po.qty_ctn ?? null;
+      let poQtyEa = null;
       let piQtyEa = null;
       let bridgeNote = '';
+      const poIsCtn = po.qty_ea == null && po.qty_ctn != null;
 
-      if (pi.qty_ea != null) {
-        piQtyEa = pi.qty_ea;
-      } else if (pi.qty_ctn != null) {
-        const ps = ref?.pack_size_ea || pi.pack_size || (poQtyEa && pi.qty_ctn ? Math.round(poQtyEa / pi.qty_ctn) : null);
-        if (ps && ps > 1) {
-          piQtyEa = pi.qty_ctn * ps;
-          bridgeNote = ` (${pi.qty_ctn} CTN × ${ps} ea/ctn = ${piQtyEa} ea)`;
-        } else {
-          piQtyEa = pi.qty_ctn;
+      if (poIsCtn && pi.qty_ctn != null) {
+        // Both sides in CTN — compare directly, no pack_size bridge needed
+        poQtyEa = po.qty_ctn;
+        piQtyEa = pi.qty_ctn;
+        bridgeNote = '';
+      } else {
+        // PO in EA (Epicor style) or PI has qty_ea
+        poQtyEa = po.qty_ea ?? po.qty_ctn ?? null;
+        if (pi.qty_ea != null) {
+          piQtyEa = pi.qty_ea;
+        } else if (pi.qty_ctn != null) {
+          const ps = ref?.pack_size_ea || pi.pack_size || (poQtyEa && pi.qty_ctn ? Math.round(poQtyEa / pi.qty_ctn) : null);
+          if (ps && ps > 1) {
+            piQtyEa = pi.qty_ctn * ps;
+            bridgeNote = ` (${pi.qty_ctn} CTN × ${ps} ea/ctn = ${piQtyEa} ea)`;
+          } else {
+            piQtyEa = pi.qty_ctn;
+          }
         }
       }
 
       if (poQtyEa != null && piQtyEa != null) {
         const qVar = Math.abs(pct(poQtyEa, piQtyEa));
         if (qVar > 5) {
+          const poLabel = poIsCtn ? `${poQtyEa} CTN` : `${poQtyEa} EA`;
           mismatches.push({
             item: po.item_code, field: 'Qty',
-            po: `${poQtyEa} EA`, pi: `${pi.qty_ctn ?? piQtyEa}${bridgeNote}`,
+            po: poLabel, pi: `${pi.qty_ctn ?? piQtyEa}${bridgeNote}`,
             variance: `${qVar.toFixed(1)}%`,
           });
           pass = false; needsManual = true; qtyIssues++;
@@ -864,19 +879,31 @@ function compare(poDoc, piDoc) {
           : null;
         const ps = ref?.pack_size_ea || pi.pack_size || snapPs || po.pack_size;
 
-        // Normalise both prices to per_ea for consistent comparison
-        if (po.price_basis === 'per_1000') {
-          poPrice = po.unit_price / 1000;
-          priceBasisNote = ' (' + po.unit_price + '/1000 = ' + poPrice.toFixed(6) + '/ea)';
-        } else if (po.price_basis === 'per_ctn' && ps) {
-          poPrice = po.unit_price / ps;
-          priceBasisNote = ' (' + po.unit_price + '/ctn ÷ ' + ps + ' = ' + poPrice.toFixed(6) + '/ea)';
-        }
+        // Normalise prices for comparison
+        // Same basis: compare directly (avoids pack_size dependency)
+        // Mixed basis: normalise both to per_ea
+        const sameBasis = po.price_basis === pi.price_basis;
 
-        if (pi.price_basis === 'per_1000') {
-          piPrice = pi.unit_price / 1000;
-        } else if (pi.price_basis === 'per_ctn' && ps) {
-          piPrice = pi.unit_price / ps;
+        if (sameBasis && po.price_basis === 'per_ctn') {
+          // Both per_ctn — compare at carton level directly
+          priceBasisNote = '';
+        } else if (sameBasis && po.price_basis === 'per_1000') {
+          // Both per_1000 — compare directly
+          priceBasisNote = '';
+        } else {
+          // Mixed basis — normalise both to per_ea
+          if (po.price_basis === 'per_1000') {
+            poPrice = po.unit_price / 1000;
+            priceBasisNote = ' (' + po.unit_price + '/1000 = ' + poPrice.toFixed(6) + '/ea)';
+          } else if (po.price_basis === 'per_ctn' && ps) {
+            poPrice = po.unit_price / ps;
+            priceBasisNote = ' (' + po.unit_price + '/ctn ÷ ' + ps + ' = ' + poPrice.toFixed(6) + '/ea)';
+          }
+          if (pi.price_basis === 'per_1000') {
+            piPrice = pi.unit_price / 1000;
+          } else if (pi.price_basis === 'per_ctn' && ps) {
+            piPrice = pi.unit_price / ps;
+          }
         }
 
         const pVar = Math.abs(pct(poPrice, piPrice));
