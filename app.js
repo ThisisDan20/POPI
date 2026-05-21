@@ -1,4 +1,5 @@
-// PO ↔ PI Checker — app.js v3.20
+// PO ↔ PI Checker — app.js v3.21
+// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases (Henderson↔Auckland etc.)
 // v3.20: Post-extraction sanity checks — discard qty_ea if inconsistent with qty_ctn×pack_size; discard suspiciously small qty (Rel# confusion)
 // v3.19: Prompt fix — ignore Rel# as qty; recognise ct/cts/case as carton units
 // v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
@@ -747,6 +748,32 @@ function compare(poDoc, piDoc) {
   {
     const poCity = pf.shipToCity || null;
     const piCity = if_.consigneeCity || null;
+
+    // Known city aliases — suburbs/districts that are part of the same metro area.
+    // Each group: any city in the same group matches any other.
+    const CITY_ALIAS_GROUPS = [
+      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin'],
+      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown'],
+      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray'],
+      ['brisbane', 'ipswich', 'logan', 'redcliffe', 'caboolture'],
+    ];
+
+    function cityMatch(a, b) {
+      if (!a || !b) return false;
+      const na = normalize(a);
+      const nb = normalize(b);
+      if (na === nb) return true;
+      // Contains check — one is a substring of the other
+      if (na.includes(nb) || nb.includes(na)) return true;
+      // Alias group check
+      for (const group of CITY_ALIAS_GROUPS) {
+        const aInGroup = group.some(g => na.includes(g) || g.includes(na));
+        const bInGroup = group.some(g => nb.includes(g) || g.includes(nb));
+        if (aInGroup && bInGroup) return true;
+      }
+      return false;
+    }
+
     if (!poCity) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
         note: 'Destination city not found on PO — verify manually.' });
@@ -756,7 +783,7 @@ function compare(poDoc, piDoc) {
         note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
       needsManual = true;
     } else {
-      const match = normalize(poCity) === normalize(piCity);
+      const match = cityMatch(poCity, piCity);
       checks.push({
         check: 'Destination',
         status: match ? 'PASS' : 'FAIL',
