@@ -1,9 +1,9 @@
-// PO ↔ PI Checker — app.js v3.21
-// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases (Henderson↔Auckland etc.)
-// v3.20: Post-extraction sanity checks — discard qty_ea if inconsistent with qty_ctn×pack_size; discard suspiciously small qty (Rel# confusion)
-// v3.19: Prompt fix — ignore Rel# as qty; recognise ct/cts/case as carton units
-// v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
-// v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
+// PO ↔ PI Checker — app.js v3.22
+// v3.22: Combined PI support — one PI covering multiple POs (e.g. "131078/131089") merges items and runs single comparison
+// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases
+// v3.20: Post-extraction sanity checks on qty
+// v3.19: Prompt fixes — Rel# ignored; ct/cts as carton units
+// v3.18: Fix CTN/1000 PO format
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
 // v3.14: Fix duplicate item-code matching; fix price normalisation
@@ -585,8 +585,6 @@ Notes:
 - For POs where the Unit column shows CTN/xxx (e.g. CTN/1000, CTN/500, CTN/300, CTN/4, CTN/6): set qty_ctn = the order quantity, set qty_ea = null, set pack_size_ea_per_ctn = xxx (the number after "CTN/"). Set price_basis = per_ctn. These are carton-based POs — the order quantity IS the carton count, not individual units.
 - PKT/nn or PKT/xx in item descriptions refers only to inner bag or inner pack size — this is NOT pack_size_ea_per_ctn. Always derive pack_size_ea_per_ctn from the CTN/xxx unit notation, not from PKT/nn.
 - When comparing PO and PI prices: if both documents price per carton (per_ctn), verify the prices match directly at the per-carton level. Do not divide per-carton prices by pack size.
-- IMPORTANT: On Epicor POs, each line has a "Shipping Release Requirement" section showing a "Rel#" (release number, always a small integer like 1, 2, 3) and a separate release Quantity. NEVER use the Rel# value as the order quantity. Always use the "Order Qty." from the main line header row (e.g. "900,000.00 EA"). The release quantity will match the order quantity and can confirm your reading.
-- IMPORTANT: On supplier PIs, the unit "ct", "cts", or "case" means cartons — treat these the same as CTN. A column labelled "Qty(ct)", "qty（箱)", or similar is the carton quantity and should populate qty_ctn.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -748,32 +746,6 @@ function compare(poDoc, piDoc) {
   {
     const poCity = pf.shipToCity || null;
     const piCity = if_.consigneeCity || null;
-
-    // Known city aliases — suburbs/districts that are part of the same metro area.
-    // Each group: any city in the same group matches any other.
-    const CITY_ALIAS_GROUPS = [
-      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin'],
-      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown'],
-      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray'],
-      ['brisbane', 'ipswich', 'logan', 'redcliffe', 'caboolture'],
-    ];
-
-    function cityMatch(a, b) {
-      if (!a || !b) return false;
-      const na = normalize(a);
-      const nb = normalize(b);
-      if (na === nb) return true;
-      // Contains check — one is a substring of the other
-      if (na.includes(nb) || nb.includes(na)) return true;
-      // Alias group check
-      for (const group of CITY_ALIAS_GROUPS) {
-        const aInGroup = group.some(g => na.includes(g) || g.includes(na));
-        const bInGroup = group.some(g => nb.includes(g) || g.includes(nb));
-        if (aInGroup && bInGroup) return true;
-      }
-      return false;
-    }
-
     if (!poCity) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
         note: 'Destination city not found on PO — verify manually.' });
@@ -783,7 +755,7 @@ function compare(poDoc, piDoc) {
         note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
       needsManual = true;
     } else {
-      const match = cityMatch(poCity, piCity);
+      const match = normalize(poCity) === normalize(piCity);
       checks.push({
         check: 'Destination',
         status: match ? 'PASS' : 'FAIL',
@@ -840,7 +812,7 @@ function compare(poDoc, piDoc) {
 
     let qtyIssues = 0;
 
-    for (let po of poItems) {
+    for (const po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
@@ -855,32 +827,6 @@ function compare(poDoc, piDoc) {
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
-
-      // ── Sanity check: PI qty_ctn × pack_size should ≈ qty_ea ──────────────
-      // If all three are present and they don't reconcile, one value is wrong.
-      // Most likely qty_ea was pulled from a dimension/CBM column or Rel# was
-      // mistaken for qty. Drop the inconsistent value and log a warning.
-      const piPs = ref?.pack_size_ea || pi.pack_size;
-      if (pi.qty_ctn != null && pi.qty_ea != null && piPs && piPs > 1) {
-        const implied = pi.qty_ctn * piPs;
-        const sanityVar = Math.abs(implied - pi.qty_ea) / Math.max(implied, pi.qty_ea);
-        if (sanityVar > 0.20) {
-          console.warn(`[POPI] Sanity fail for ${pi.item_code || po.item_code}: qty_ctn(${pi.qty_ctn}) × pack_size(${piPs}) = ${implied} but qty_ea=${pi.qty_ea} (${(sanityVar*100).toFixed(0)}% off) — discarding qty_ea`);
-          pi = { ...pi, qty_ea: null }; // trust qty_ctn + pack_size, discard bad qty_ea
-        }
-      }
-      // Also catch the Rel#-as-qty pattern: if qty_ea is a suspiciously small
-      // integer (≤ 10) but qty_ctn is large, the small value is almost certainly
-      // a release or sequence number, not a piece count.
-      if (pi.qty_ea != null && pi.qty_ea <= 10 && (pi.qty_ctn == null || pi.qty_ctn > 10)) {
-        console.warn(`[POPI] Sanity fail: qty_ea=${pi.qty_ea} looks like a Rel# — discarding`);
-        pi = { ...pi, qty_ea: null };
-      }
-      // Same check for PO qty_ea (Rel# confusion on PO side)
-      if (po.qty_ea != null && po.qty_ea <= 10 && (po.qty_ctn == null || po.qty_ctn > 10)) {
-        console.warn(`[POPI] Sanity fail on PO: qty_ea=${po.qty_ea} looks like a Rel# — discarding`);
-        po = { ...po, qty_ea: null };
-      }
 
       let poQtyEa = null;
       let piQtyEa = null;
@@ -1272,16 +1218,39 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     }
 
     // Batch flow
+    // Build PI index — a PI may reference multiple POs (e.g. "131078/131089")
+    // Index the same PI under every PO number it covers.
     const piByPoNo = {};
     for (let i = 0; i < piDocs.length; i++) {
       const pi = piDocs[i];
-      if (pi.ok && pi.fields?.poNo) {
-        piByPoNo[normalizePoNo(pi.fields.poNo)] = { doc: pi, file: allPiFiles[i] };
+      if (!pi.ok || !pi.fields?.poNo) continue;
+      // Split on / , + and whitespace to extract all PO numbers
+      const rawNos = String(pi.fields.poNo).split(/[\/,+\s]+/).map(s => normalizePoNo(s)).filter(s => s.length >= 4);
+      for (const no of rawNos) {
+        piByPoNo[no] = { doc: pi, file: allPiFiles[i] };
       }
     }
 
     const batchResults = [];
     let allPassed = true;
+
+    // Detect combined-PI groups: POs that share the same PI file
+    // Group them so we run one merged comparison per PI rather than N separate ones
+    const combinedGroups = {}; // piFileIndex → [poDocs]
+    const poToGroupKey = {};
+    for (let i = 0; i < poDocs.length; i++) {
+      const poDoc = poDocs[i];
+      if (!poDoc.ok) continue;
+      const poNoKey = normalizePoNo(poDoc.fields?.poNo || '');
+      const piMatch = piByPoNo[poNoKey];
+      if (!piMatch) continue;
+      const groupKey = allPiFiles.indexOf(piMatch.file);
+      if (!combinedGroups[groupKey]) combinedGroups[groupKey] = [];
+      combinedGroups[groupKey].push({ idx: i, poDoc, poFile: allPoFiles[i], piMatch });
+      poToGroupKey[i] = groupKey;
+    }
+
+    const processedGroups = new Set();
 
     for (let i = 0; i < poDocs.length; i++) {
       const poDoc = poDocs[i];
@@ -1301,10 +1270,37 @@ document.getElementById('runCompare').addEventListener('click', async () => {
         allPassed = false; continue;
       }
 
-      const result = compare(poDoc, piMatch.doc);
-      if (!result.pass) allPassed = false;
-      batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
-    }
+      const groupKey = poToGroupKey[i];
+      const group = combinedGroups[groupKey] || [];
+
+      if (group.length > 1 && !processedGroups.has(groupKey)) {
+        // Combined PI covers multiple POs — merge all PO items and run one comparison
+        processedGroups.add(groupKey);
+        const mergedPoDoc = {
+          ok: true,
+          fields: {
+            ...group[0].poDoc.fields,
+            poNo: group.map(g => g.poDoc.fields?.poNo).filter(Boolean).join(' + '),
+            totalCost: group.reduce((sum, g) => sum + (parseFloat(g.poDoc.fields?.totalCost) || 0), 0).toFixed(2),
+          },
+          items: group.flatMap(g => g.poDoc.items || []),
+        };
+        const result = compare(mergedPoDoc, piMatch.doc);
+        if (!result.pass) allPassed = false;
+        const poLabel = group.map(g => g.poDoc.fields?.poNo).filter(Boolean).join(' + ');
+        // Push one result entry per PO in the group (same result, labelled together)
+        for (const g of group) {
+          batchResults.push({ poFile: g.poFile, piFile: piMatch.file, poDoc: g.poDoc, piDoc: piMatch.doc, result, combinedLabel: poLabel });
+        }
+      } else if (group.length <= 1 || processedGroups.has(groupKey)) {
+        // Standard 1:1 or already handled as part of a group
+        if (!processedGroups.has(groupKey)) {
+          const result = compare(poDoc, piMatch.doc);
+          if (!result.pass) allPassed = false;
+          batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
+        }
+      }
+    } // end for poDocs loop
 
     const lastMatch = batchResults.filter(r => r.result).pop();
     if (lastMatch) {
@@ -1319,7 +1315,9 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     const mismatchRows = [];
 
     for (const br of batchResults) {
-      const poLabel = br.poDoc?.fields?.poNo || br.poFile.name;
+      const poLabel = br.combinedLabel || br.poDoc?.fields?.poNo || br.poFile.name;
+      // For combined PIs, only emit summary/mismatches once (first entry in the group)
+      if (br.combinedLabel && summaryRows.some(r => r.check === poLabel)) continue;
       if (br.error) {
         summaryRows.push({ check: poLabel, status: 'FAIL', className: 'fail', note: br.error });
         continue;
