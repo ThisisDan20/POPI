@@ -1,6 +1,6 @@
-// PO ↔ PI Checker — app.js v3.23
-// v3.23: Fix combined PI matching — robust multi-PO splitting incl. digit-boundary fallback; prompt updated to preserve slash separator
-// v3.22: Combined PI support — merged items comparison for multi-PO PIs
+// PO ↔ PI Checker — app.js v3.24
+// v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn correctly identified
+// v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
 // v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases
 // v3.20: Post-extraction sanity checks on qty
 // v3.19: Prompt fixes — Rel# ignored; ct/cts as carton units
@@ -574,8 +574,8 @@ Return this exact structure:
 }
 
 Notes:
-- For Epicor POs: qty is typically in EA (each), price may be per 1000 (look for "Carton" UOM hint in description)
-- For supplier PIs: qty is typically in CTN (cartons), price is per CTN
+- For Epicor POs: qty is in EA (each) — always populate qty_ea, leave qty_ctn null. Price is per 1000 EA when the description shows "Carton" as the UOM hint and the price has "/1000" — set price_basis to "per_1000".
+- For supplier PIs: qty_ctn is the carton count; price_basis depends on the column header — if it says "USD/1000P", "per 1000pcs", "/1000", or similar, set price_basis to "per_1000". Only set price_basis to "per_ctn" if the price is explicitly quoted per carton with no "/1000" indicator.
 - If a row has both a buyer code AND a supplier code, populate both fields
 - total_cost should be the document grand total
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
