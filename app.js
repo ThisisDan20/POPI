@@ -1,5 +1,6 @@
-// PO ↔ PI Checker — app.js v3.22
-// v3.22: Combined PI support — one PI covering multiple POs (e.g. "131078/131089") merges items and runs single comparison
+// PO ↔ PI Checker — app.js v3.23
+// v3.23: Fix combined PI matching — robust multi-PO splitting incl. digit-boundary fallback; prompt updated to preserve slash separator
+// v3.22: Combined PI support — merged items comparison for multi-PO PIs
 // v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases
 // v3.20: Post-extraction sanity checks on qty
 // v3.19: Prompt fixes — Rel# ignored; ct/cts as carton units
@@ -549,7 +550,7 @@ const EXTRACT_PROMPT = `You are a procurement document parser. Extract structure
 Return this exact structure:
 {
   "doc_type": "PO" or "PI",
-  "po_number": "string or null",
+  "po_number": "PO number(s) from the document — if multiple PO numbers appear (e.g. '131078/131089' or '131078, 131089'), return them ALL separated by a forward slash (e.g. '131078/131089'). Do not concatenate without a separator. Return null if not found.",
   "payment_terms": "string or null",
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
@@ -1224,10 +1225,18 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     for (let i = 0; i < piDocs.length; i++) {
       const pi = piDocs[i];
       if (!pi.ok || !pi.fields?.poNo) continue;
-      // Split on / , + and whitespace to extract all PO numbers
-      const rawNos = String(pi.fields.poNo).split(/[\/,+\s]+/).map(s => normalizePoNo(s)).filter(s => s.length >= 4);
-      for (const no of rawNos) {
-        piByPoNo[no] = { doc: pi, file: allPiFiles[i] };
+      const raw = String(pi.fields.poNo);
+      // Split on common separators: / , + whitespace
+      let parts = raw.split(/[\/,+\s]+/).map(s => s.trim()).filter(s => s.length >= 4);
+      // Fallback: if only one part and it looks like two 6-digit PO numbers concatenated
+      // (e.g. Haiku returned "131078131089"), split at every 6-digit boundary
+      if (parts.length === 1 && /^\d{10,}$/.test(parts[0])) {
+        const m = parts[0].match(/\d{5,7}/g);
+        if (m && m.length > 1) parts = m;
+      }
+      for (const p of parts) {
+        const no = normalizePoNo(p);
+        if (no.length >= 4) piByPoNo[no] = { doc: pi, file: allPiFiles[i] };
       }
     }
 
