@@ -1,15 +1,21 @@
-// PO ↔ PI Checker — app.js v3.18
-// v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
+// PO ↔ PI Checker — app.js v3.26
+// v3.26: Sanity checks restored + new small qty_ctn discard (Rel# confusion fix for this PO format)
+// v3.25: Files persist after download; Clear Data button resets everything
+// v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn
+// v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
+// v3.22: Combined PI support — one PI covering multiple POs merges items and runs single comparison
+// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases (Henderson↔Auckland)
+// v3.20: Post-extraction sanity checks — discard qty if inconsistent with pack_size; discard Rel# values
+// v3.19: Prompt fix — ignore Rel# as qty; recognise ct/cts/case as carton units
+// v3.18: Fix CTN/1000 PO format — CTN-to-CTN qty comparison; same-basis price comparison
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
 // v3.14: Fix duplicate item-code matching; fix price normalisation
-// v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
-// v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
-// v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
-// v3.9: Destination city + consignee name checks added
-// Parsing: Claude API (Haiku) reads PDFs — no regex fragility
-// Comparison, signing, quiz: all local
+// v3.13: WARN→WARNING in status display; 5-step layout
+// v3.12: Prevent Haiku confusing carton dimensions with qty_ctn
+// v3.11: Normalise PI per_1000 prices to per_ctn before comparison
+// v3.10: Fix split H-code extraction from narrow PI columns
 
 // ─── pdf.js setup (text extraction only) ────────────────────────────────────
 if (typeof pdfjsLib !== 'undefined') {
@@ -809,7 +815,7 @@ function compare(poDoc, piDoc) {
 
     let qtyIssues = 0;
 
-    for (const po of poItems) {
+    for (let po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
@@ -824,6 +830,33 @@ function compare(poDoc, piDoc) {
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
+
+      // ── Sanity checks: discard values that look like Rel# or sequence numbers ──
+      // Small qty_ea on PO (e.g. Haiku read Rel#:1 as qty_ea)
+      if (po.qty_ea != null && po.qty_ea <= 10 && (po.qty_ctn == null || po.qty_ctn > po.qty_ea)) {
+        console.warn(`[POPI] PO sanity: qty_ea=${po.qty_ea} looks like Rel# — discarding`);
+        po = { ...po, qty_ea: null };
+      }
+      // Small qty_ctn on PO (e.g. Haiku read Rel#:1 as qty_ctn, qty_ea null)
+      if (po.qty_ctn != null && po.qty_ctn <= 10 && po.qty_ea == null) {
+        console.warn(`[POPI] PO sanity: qty_ctn=${po.qty_ctn} looks like Rel# — discarding`);
+        po = { ...po, qty_ctn: null };
+      }
+      // Small qty_ea on PI
+      if (pi.qty_ea != null && pi.qty_ea <= 10 && (pi.qty_ctn == null || pi.qty_ctn > pi.qty_ea)) {
+        console.warn(`[POPI] PI sanity: qty_ea=${pi.qty_ea} looks like Rel# — discarding`);
+        pi = { ...pi, qty_ea: null };
+      }
+      // PI qty_ctn × pack_size should ≈ qty_ea when all three are present
+      const piPs = ref?.pack_size_ea || pi.pack_size;
+      if (pi.qty_ctn != null && pi.qty_ea != null && piPs && piPs > 1) {
+        const implied = pi.qty_ctn * piPs;
+        const sanityVar = Math.abs(implied - pi.qty_ea) / Math.max(implied, pi.qty_ea);
+        if (sanityVar > 0.20) {
+          console.warn(`[POPI] PI sanity: qty_ctn(${pi.qty_ctn})×pack(${piPs})=${implied} vs qty_ea=${pi.qty_ea} (${(sanityVar*100).toFixed(0)}% off) — discarding qty_ea`);
+          pi = { ...pi, qty_ea: null };
+        }
+      }
 
       let poQtyEa = null;
       let piQtyEa = null;
