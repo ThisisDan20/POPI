@@ -136,6 +136,7 @@ button#piBrowse   { background: linear-gradient(135deg,#f05a4a,#b52e24); color:#
 button#finalize   { background: linear-gradient(135deg,#EF9F27,#BA7517); color:#fff; border:none; padding:10px 22px; border-radius:8px; font-size:0.9rem; font-weight:700; width:100%; margin-top:6px; text-shadow:0 1px 1px rgba(0,0,0,.15); }
 button#downloadSignedPi { background: linear-gradient(135deg,#7dc84a,#3B6D11); color:#fff; border:none; padding:10px 22px; border-radius:8px; font-size:0.9rem; font-weight:700; margin-top:4px; text-shadow:0 1px 1px rgba(0,0,0,.15); }
 button#loadSample { background:#fff; border:1px solid #c6d4e4; color:#5f7085; padding:10px 18px; border-radius:8px; font-size:0.9rem; }
+button#clearData  { background:#fff; border:1px solid #e0b0b0; color:#a32d2d; padding:10px 18px; border-radius:8px; font-size:0.9rem; }
 
 .actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; }
 
