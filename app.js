@@ -1,5 +1,5 @@
 // PO ↔ PI Checker — app.js v3.26
-// v3.26: Sanity checks + small qty_ctn discard; fuzzy city matching with AU/NZ suburb aliases
+// v3.26: Three-tier destination matching (city alias + state fallback); ship_to_state + consignee_state extracted
 // v3.25: Files persist after download; Clear Data button resets everything
 // v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn
 // v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
@@ -557,9 +557,11 @@ Return this exact structure:
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
   "total_cost": "number as string (no commas or $) or null",
-  "ship_to_city": "city from Ship To / delivery address on PO (e.g. Auckland, Sydney, Melbourne) or null",
+  "ship_to_city": "city or suburb from Ship To / Deliver To / delivery address on PO (e.g. Auckland, Sydney, Berrinba, Henderson) — use the suburb/locality name, not the state or country. Works for both Epicor PO format and other PO formats (ORDER NO, Purchase Order, etc.) or null",
+  "ship_to_state": "state, region or country from Ship To / Deliver To on PO (e.g. QLD, NSW, VIC, Auckland, New Zealand) or null",
   "consignee_name": "company name from To / Consignee field on PI or null",
-  "consignee_city": "city from consignee or delivery address on PI (e.g. Auckland, Sydney) or null",
+  "consignee_city": "city or suburb from consignee or delivery address on PI (e.g. Auckland, Sydney, Brisbane, Berrinba) or null",
+  "consignee_state": "state, region or country from consignee or delivery address on PI (e.g. QLD, NSW, VIC, Auckland, New Zealand, Australia) or null",
   "line_items": [
     {
       "our_code": "buyer item code e.g. H100219 or null",
@@ -668,8 +670,10 @@ async function extractWithClaude(file) {
       incoterms:     parsed.incoterms || null,
       totalCost:     parsed.total_cost ? String(parsed.total_cost).replace(/,/g, '') : null,
       shipToCity:    parsed.ship_to_city   || null,
+      shipToState:   parsed.ship_to_state  || null,
       consigneeName: parsed.consignee_name || null,
       consigneeCity: parsed.consignee_city || null,
+      consigneeState:parsed.consignee_state || null,
     },
     items: (parsed.line_items || []).map(it => ({
       our_code:      (it.our_code || '').toUpperCase() || null,
@@ -745,44 +749,81 @@ function compare(poDoc, piDoc) {
     }
   }
 
-  // ── Destination city: PO ship_to_city vs PI consignee_city ──
+  // ── Destination: three-tier address match (city alias → state → fail) ──────
   {
-    const poCity = pf.shipToCity || null;
-    const piCity = if_.consigneeCity || null;
+    const poCity  = pf.shipToCity     || null;
+    const poState = pf.shipToState    || null;
+    const piCity  = if_.consigneeCity  || null;
+    const piState = if_.consigneeState || null;
 
     const CITY_ALIAS_GROUPS = [
-      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin'],
-      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown'],
-      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray'],
-      ['brisbane', 'ipswich', 'logan', 'redcliffe', 'caboolture'],
+      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin', 'east tamaki', 'albany', 'takanini'],
+      ['brisbane', 'berrinba', 'ipswich', 'logan', 'redcliffe', 'caboolture', 'acacia ridge', 'archerfield', 'rocklea', 'salisbury', 'moorooka', 'yatala', 'beenleigh', 'richlands', 'wacol', 'springfield', 'heathwood'],
+      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown', 'winston hills', 'seven hills', 'ryde', 'chullora', 'wetherill park', 'prestons', 'erskine park'],
+      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray', 'laverton', 'keysborough', 'altona', 'truganina', 'campbellfield', 'epping'],
+      ['perth', 'fremantle', 'welshpool', 'kewdale', 'malaga', 'canning vale', 'cannington', 'osborne park'],
+      ['adelaide', 'lonsdale', 'regency park', 'wingfield', 'gillman', 'gepps cross', 'salisbury', 'kilburn'],
     ];
 
-    function cityMatch(a, b) {
+    const STATE_ALIAS_GROUPS = [
+      ['nz', 'new zealand', 'auckland', 'wellington', 'christchurch', 'hamilton', 'tauranga'],
+      ['qld', 'queensland', 'brisbane', 'berrinba', 'ipswich', 'gold coast', 'sunshine coast'],
+      ['nsw', 'new south wales', 'sydney', 'newcastle', 'wollongong', 'winston hills'],
+      ['vic', 'victoria', 'melbourne', 'geelong', 'ballarat', 'bendigo'],
+      ['wa', 'western australia', 'perth', 'fremantle'],
+      ['sa', 'south australia', 'adelaide'],
+      ['tas', 'tasmania', 'hobart', 'launceston'],
+      ['act', 'canberra', 'australian capital territory'],
+      ['nt', 'northern territory', 'darwin'],
+      ['australia', 'aus', 'qld', 'nsw', 'vic', 'wa', 'sa', 'tas', 'act', 'nt',
+       'queensland', 'new south wales', 'victoria', 'western australia', 'south australia'],
+    ];
+
+    function inSameGroup(a, b, groups) {
       if (!a || !b) return false;
       const na = normalize(a); const nb = normalize(b);
-      if (na === nb) return true;
-      if (na.includes(nb) || nb.includes(na)) return true;
-      for (const group of CITY_ALIAS_GROUPS) {
-        const aIn = group.some(g => na.includes(g) || g.includes(na));
-        const bIn = group.some(g => nb.includes(g) || g.includes(nb));
-        if (aIn && bIn) return true;
+      for (const g of groups) {
+        if (g.some(x => na.includes(x) || x.includes(na)) &&
+            g.some(x => nb.includes(x) || x.includes(nb))) return true;
       }
       return false;
     }
 
-    if (!poCity) {
+    function cityMatch(a, b) {
+      if (!a || !b) return false;
+      const na = normalize(a); const nb = normalize(b);
+      if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+      return inSameGroup(a, b, CITY_ALIAS_GROUPS);
+    }
+
+    function stateMatch(a, b) {
+      if (!a || !b) return false;
+      const na = normalize(a); const nb = normalize(b);
+      if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+      return inSameGroup(a, b, STATE_ALIAS_GROUPS);
+    }
+
+    if (!poCity && !poState) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
-        note: 'Destination city not found on PO — verify manually.' });
+        note: 'Destination not found on PO — verify manually.' });
       needsManual = true;
-    } else if (!piCity) {
+    } else if (!piCity && !piState) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
-        note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
+        note: `PO: ${[poCity, poState].filter(Boolean).join(', ')}  |  PI: destination not stated.` });
       needsManual = true;
     } else {
-      const match = cityMatch(poCity, piCity);
-      checks.push({ check: 'Destination', status: match ? 'PASS' : 'FAIL',
-        className: match ? 'pass' : 'fail', note: `PO: ${poCity}  |  PI: ${piCity}` });
-      if (!match) { pass = false; needsManual = true; }
+      const poAddr = [poCity, poState].filter(Boolean).join(', ');
+      const piAddr = [piCity, piState].filter(Boolean).join(', ');
+      const cityOk  = cityMatch(poCity, piCity) || cityMatch(poCity, piState) || cityMatch(poState, piCity);
+      const stateOk = stateMatch(poState, piState) || stateMatch(poCity, piState) || stateMatch(poState, piCity) || stateMatch(poCity, piCity);
+      if (cityOk || stateOk) {
+        const note = cityOk ? `PO: ${poAddr}  |  PI: ${piAddr}` : `PO: ${poAddr}  |  PI: ${piAddr} (same region)`;
+        checks.push({ check: 'Destination', status: 'PASS', className: 'pass', note });
+      } else {
+        checks.push({ check: 'Destination', status: 'FAIL', className: 'fail',
+          note: `PO: ${poAddr}  |  PI: ${piAddr}` });
+        pass = false; needsManual = true;
+      }
     }
   }
 
