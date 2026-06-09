@@ -1,5 +1,5 @@
 // PO ↔ PI Checker — app.js v3.26
-// v3.26: Sanity checks restored + new small qty_ctn discard (Rel# confusion fix for this PO format)
+// v3.26: Sanity checks + small qty_ctn discard; fuzzy city matching with AU/NZ suburb aliases
 // v3.25: Files persist after download; Clear Data button resets everything
 // v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn
 // v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
@@ -749,6 +749,27 @@ function compare(poDoc, piDoc) {
   {
     const poCity = pf.shipToCity || null;
     const piCity = if_.consigneeCity || null;
+
+    const CITY_ALIAS_GROUPS = [
+      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin'],
+      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown'],
+      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray'],
+      ['brisbane', 'ipswich', 'logan', 'redcliffe', 'caboolture'],
+    ];
+
+    function cityMatch(a, b) {
+      if (!a || !b) return false;
+      const na = normalize(a); const nb = normalize(b);
+      if (na === nb) return true;
+      if (na.includes(nb) || nb.includes(na)) return true;
+      for (const group of CITY_ALIAS_GROUPS) {
+        const aIn = group.some(g => na.includes(g) || g.includes(na));
+        const bIn = group.some(g => nb.includes(g) || g.includes(nb));
+        if (aIn && bIn) return true;
+      }
+      return false;
+    }
+
     if (!poCity) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
         note: 'Destination city not found on PO — verify manually.' });
@@ -758,13 +779,9 @@ function compare(poDoc, piDoc) {
         note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
       needsManual = true;
     } else {
-      const match = normalize(poCity) === normalize(piCity);
-      checks.push({
-        check: 'Destination',
-        status: match ? 'PASS' : 'FAIL',
-        className: match ? 'pass' : 'fail',
-        note: `PO: ${poCity}  |  PI: ${piCity}`,
-      });
+      const match = cityMatch(poCity, piCity);
+      checks.push({ check: 'Destination', status: match ? 'PASS' : 'FAIL',
+        className: match ? 'pass' : 'fail', note: `PO: ${poCity}  |  PI: ${piCity}` });
       if (!match) { pass = false; needsManual = true; }
     }
   }
