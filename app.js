@@ -1,10 +1,6 @@
-// PO ↔ PI Checker — app.js v3.24
-// v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn correctly identified
-// v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
-// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases
-// v3.20: Post-extraction sanity checks on qty
-// v3.19: Prompt fixes — Rel# ignored; ct/cts as carton units
-// v3.18: Fix CTN/1000 PO format
+// PO ↔ PI Checker — app.js v3.18
+// v3.18: Fix CTN/1000 PO format — qty extracted as CTN not EA; CTN-to-CTN qty comparison; same-basis price comparison
+// v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
 // v3.14: Fix duplicate item-code matching; fix price normalisation
@@ -550,7 +546,7 @@ const EXTRACT_PROMPT = `You are a procurement document parser. Extract structure
 Return this exact structure:
 {
   "doc_type": "PO" or "PI",
-  "po_number": "PO number(s) from the document — if multiple PO numbers appear (e.g. '131078/131089' or '131078, 131089'), return them ALL separated by a forward slash (e.g. '131078/131089'). Do not concatenate without a separator. Return null if not found.",
+  "po_number": "string or null",
   "payment_terms": "string or null",
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
@@ -574,8 +570,8 @@ Return this exact structure:
 }
 
 Notes:
-- For Epicor POs: qty is in EA (each) — always populate qty_ea, leave qty_ctn null. Price is per 1000 EA when the description shows "Carton" as the UOM hint and the price has "/1000" — set price_basis to "per_1000".
-- For supplier PIs: qty_ctn is the carton count; price_basis depends on the column header — if it says "USD/1000P", "per 1000pcs", "/1000", or similar, set price_basis to "per_1000". Only set price_basis to "per_ctn" if the price is explicitly quoted per carton with no "/1000" indicator.
+- For Epicor POs: qty is typically in EA (each), price may be per 1000 (look for "Carton" UOM hint in description)
+- For supplier PIs: qty is typically in CTN (cartons), price is per CTN
 - If a row has both a buyer code AND a supplier code, populate both fields
 - total_cost should be the document grand total
 - payment_terms: extract the full payment condition (T/T terms, L/C terms, etc.)
@@ -1107,7 +1103,13 @@ async function buildSignedPdf(piFile, company, signer) {
     { text: `Date:  ${dateStr}`,         bold: false, size: 9.5 },
   ];
 
-  const BOX_W = 270; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
+  const BOX_W_MIN = 180; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
+
+  // Measure each line and size the box to fit the widest one
+  const lineWidths = sigLines.map(line =>
+    (line.bold ? boldFont : font).widthOfTextAtSize(line.text, line.size)
+  );
+  const BOX_W = Math.max(BOX_W_MIN, Math.max(...lineWidths) + PADDING * 2);
   const BOX_H = sigLines.length * LINE_H + PADDING * 2 + 4;
   const boxX  = width - BOX_W - MARGIN;
   const boxY  = MARGIN;
@@ -1219,47 +1221,16 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     }
 
     // Batch flow
-    // Build PI index — a PI may reference multiple POs (e.g. "131078/131089")
-    // Index the same PI under every PO number it covers.
     const piByPoNo = {};
     for (let i = 0; i < piDocs.length; i++) {
       const pi = piDocs[i];
-      if (!pi.ok || !pi.fields?.poNo) continue;
-      const raw = String(pi.fields.poNo);
-      // Split on common separators: / , + whitespace
-      let parts = raw.split(/[\/,+\s]+/).map(s => s.trim()).filter(s => s.length >= 4);
-      // Fallback: if only one part and it looks like two 6-digit PO numbers concatenated
-      // (e.g. Haiku returned "131078131089"), split at every 6-digit boundary
-      if (parts.length === 1 && /^\d{10,}$/.test(parts[0])) {
-        const m = parts[0].match(/\d{5,7}/g);
-        if (m && m.length > 1) parts = m;
-      }
-      for (const p of parts) {
-        const no = normalizePoNo(p);
-        if (no.length >= 4) piByPoNo[no] = { doc: pi, file: allPiFiles[i] };
+      if (pi.ok && pi.fields?.poNo) {
+        piByPoNo[normalizePoNo(pi.fields.poNo)] = { doc: pi, file: allPiFiles[i] };
       }
     }
 
     const batchResults = [];
     let allPassed = true;
-
-    // Detect combined-PI groups: POs that share the same PI file
-    // Group them so we run one merged comparison per PI rather than N separate ones
-    const combinedGroups = {}; // piFileIndex → [poDocs]
-    const poToGroupKey = {};
-    for (let i = 0; i < poDocs.length; i++) {
-      const poDoc = poDocs[i];
-      if (!poDoc.ok) continue;
-      const poNoKey = normalizePoNo(poDoc.fields?.poNo || '');
-      const piMatch = piByPoNo[poNoKey];
-      if (!piMatch) continue;
-      const groupKey = allPiFiles.indexOf(piMatch.file);
-      if (!combinedGroups[groupKey]) combinedGroups[groupKey] = [];
-      combinedGroups[groupKey].push({ idx: i, poDoc, poFile: allPoFiles[i], piMatch });
-      poToGroupKey[i] = groupKey;
-    }
-
-    const processedGroups = new Set();
 
     for (let i = 0; i < poDocs.length; i++) {
       const poDoc = poDocs[i];
@@ -1279,37 +1250,10 @@ document.getElementById('runCompare').addEventListener('click', async () => {
         allPassed = false; continue;
       }
 
-      const groupKey = poToGroupKey[i];
-      const group = combinedGroups[groupKey] || [];
-
-      if (group.length > 1 && !processedGroups.has(groupKey)) {
-        // Combined PI covers multiple POs — merge all PO items and run one comparison
-        processedGroups.add(groupKey);
-        const mergedPoDoc = {
-          ok: true,
-          fields: {
-            ...group[0].poDoc.fields,
-            poNo: group.map(g => g.poDoc.fields?.poNo).filter(Boolean).join(' + '),
-            totalCost: group.reduce((sum, g) => sum + (parseFloat(g.poDoc.fields?.totalCost) || 0), 0).toFixed(2),
-          },
-          items: group.flatMap(g => g.poDoc.items || []),
-        };
-        const result = compare(mergedPoDoc, piMatch.doc);
-        if (!result.pass) allPassed = false;
-        const poLabel = group.map(g => g.poDoc.fields?.poNo).filter(Boolean).join(' + ');
-        // Push one result entry per PO in the group (same result, labelled together)
-        for (const g of group) {
-          batchResults.push({ poFile: g.poFile, piFile: piMatch.file, poDoc: g.poDoc, piDoc: piMatch.doc, result, combinedLabel: poLabel });
-        }
-      } else if (group.length <= 1 || processedGroups.has(groupKey)) {
-        // Standard 1:1 or already handled as part of a group
-        if (!processedGroups.has(groupKey)) {
-          const result = compare(poDoc, piMatch.doc);
-          if (!result.pass) allPassed = false;
-          batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
-        }
-      }
-    } // end for poDocs loop
+      const result = compare(poDoc, piMatch.doc);
+      if (!result.pass) allPassed = false;
+      batchResults.push({ poFile, piFile: piMatch.file, poDoc, piDoc: piMatch.doc, result });
+    }
 
     const lastMatch = batchResults.filter(r => r.result).pop();
     if (lastMatch) {
@@ -1324,9 +1268,7 @@ document.getElementById('runCompare').addEventListener('click', async () => {
     const mismatchRows = [];
 
     for (const br of batchResults) {
-      const poLabel = br.combinedLabel || br.poDoc?.fields?.poNo || br.poFile.name;
-      // For combined PIs, only emit summary/mismatches once (first entry in the group)
-      if (br.combinedLabel && summaryRows.some(r => r.check === poLabel)) continue;
+      const poLabel = br.poDoc?.fields?.poNo || br.poFile.name;
       if (br.error) {
         summaryRows.push({ check: poLabel, status: 'FAIL', className: 'fail', note: br.error });
         continue;
