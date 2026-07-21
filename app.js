@@ -1,21 +1,15 @@
-// PO ↔ PI Checker — app.js v3.26
-// v3.26: Three-tier destination matching (city alias + state fallback); ship_to_state + consignee_state extracted
-// v3.25: Files persist after download; Clear Data button resets everything
-// v3.24: Fix extraction prompt — Epicor PO qty always qty_ea; price_basis per_1000 vs per_ctn
-// v3.23: Fix combined PI matching — robust multi-PO splitting; prompt preserves slash separator
-// v3.22: Combined PI support — one PI covering multiple POs merges items and runs single comparison
-// v3.21: Fuzzy destination city matching — contains check + suburb/metro aliases (Henderson↔Auckland)
-// v3.20: Post-extraction sanity checks — discard qty if inconsistent with pack_size; discard Rel# values
-// v3.19: Prompt fix — ignore Rel# as qty; recognise ct/cts/case as carton units
-// v3.18: Fix CTN/1000 PO format — CTN-to-CTN qty comparison; same-basis price comparison
+// PO 2194 PI Checker 2014 app.js v3.27
+// v3.27: Flag extra PI items not on PO; recognise Contract No. as PO number
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
 // v3.14: Fix duplicate item-code matching; fix price normalisation
-// v3.13: WARN→WARNING in status display; 5-step layout
-// v3.12: Prevent Haiku confusing carton dimensions with qty_ctn
-// v3.11: Normalise PI per_1000 prices to per_ctn before comparison
-// v3.10: Fix split H-code extraction from narrow PI columns
+// v3.12: Prompt fix — prevent Haiku confusing carton dimensions (L/W/H cm) with qty_ctn
+// v3.11: Normalise PI per_1000 prices to per_ctn before comparison (fixes PI with USD/1000P column)
+// v3.10: Fix split H-code extraction from narrow PI columns (e.g. H10029\n9 → H100299)
+// v3.9: Destination city + consignee name checks added
+// Parsing: Claude API (Haiku) reads PDFs — no regex fragility
+// Comparison, signing, quiz: all local
 
 // ─── pdf.js setup (text extraction only) ────────────────────────────────────
 if (typeof pdfjsLib !== 'undefined') {
@@ -552,16 +546,14 @@ const EXTRACT_PROMPT = `You are a procurement document parser. Extract structure
 Return this exact structure:
 {
   "doc_type": "PO" or "PI",
-  "po_number": "string or null",
+  "po_number": "PO number from the document. On supplier PIs this may be labelled 'PO NO', 'Your Order No.', 'Order No.', 'Contract No.', 'Reference No.' or similar — check all of these. If multiple PO numbers appear (e.g. '131078/131089'), return them all separated by a forward slash. Return null if not found.",
   "payment_terms": "string or null",
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
   "total_cost": "number as string (no commas or $) or null",
-  "ship_to_city": "city or suburb from Ship To / Deliver To / delivery address on PO (e.g. Auckland, Sydney, Berrinba, Henderson) — use the suburb/locality name, not the state or country. Works for both Epicor PO format and other PO formats (ORDER NO, Purchase Order, etc.) or null",
-  "ship_to_state": "state, region or country from Ship To / Deliver To on PO (e.g. QLD, NSW, VIC, Auckland, New Zealand) or null",
+  "ship_to_city": "city from Ship To / delivery address on PO (e.g. Auckland, Sydney, Melbourne) or null",
   "consignee_name": "company name from To / Consignee field on PI or null",
-  "consignee_city": "city or suburb from consignee or delivery address on PI (e.g. Auckland, Sydney, Brisbane, Berrinba) or null",
-  "consignee_state": "state, region or country from consignee or delivery address on PI (e.g. QLD, NSW, VIC, Auckland, New Zealand, Australia) or null",
+  "consignee_city": "city from consignee or delivery address on PI (e.g. Auckland, Sydney) or null",
   "line_items": [
     {
       "our_code": "buyer item code e.g. H100219 or null",
@@ -670,10 +662,8 @@ async function extractWithClaude(file) {
       incoterms:     parsed.incoterms || null,
       totalCost:     parsed.total_cost ? String(parsed.total_cost).replace(/,/g, '') : null,
       shipToCity:    parsed.ship_to_city   || null,
-      shipToState:   parsed.ship_to_state  || null,
       consigneeName: parsed.consignee_name || null,
       consigneeCity: parsed.consignee_city || null,
-      consigneeState:parsed.consignee_state || null,
     },
     items: (parsed.line_items || []).map(it => ({
       our_code:      (it.our_code || '').toUpperCase() || null,
@@ -749,81 +739,27 @@ function compare(poDoc, piDoc) {
     }
   }
 
-  // ── Destination: three-tier address match (city alias → state → fail) ──────
+  // ── Destination city: PO ship_to_city vs PI consignee_city ──
   {
-    const poCity  = pf.shipToCity     || null;
-    const poState = pf.shipToState    || null;
-    const piCity  = if_.consigneeCity  || null;
-    const piState = if_.consigneeState || null;
-
-    const CITY_ALIAS_GROUPS = [
-      ['auckland', 'henderson', 'manukau', 'north shore', 'waitakere', 'papakura', 'franklin', 'east tamaki', 'albany', 'takanini'],
-      ['brisbane', 'berrinba', 'ipswich', 'logan', 'redcliffe', 'caboolture', 'acacia ridge', 'archerfield', 'rocklea', 'salisbury', 'moorooka', 'yatala', 'beenleigh', 'richlands', 'wacol', 'springfield', 'heathwood'],
-      ['sydney', 'parramatta', 'blacktown', 'penrith', 'liverpool', 'campbelltown', 'winston hills', 'seven hills', 'ryde', 'chullora', 'wetherill park', 'prestons', 'erskine park'],
-      ['melbourne', 'dandenong', 'frankston', 'ringwood', 'sunshine', 'footscray', 'laverton', 'keysborough', 'altona', 'truganina', 'campbellfield', 'epping'],
-      ['perth', 'fremantle', 'welshpool', 'kewdale', 'malaga', 'canning vale', 'cannington', 'osborne park'],
-      ['adelaide', 'lonsdale', 'regency park', 'wingfield', 'gillman', 'gepps cross', 'salisbury', 'kilburn'],
-    ];
-
-    const STATE_ALIAS_GROUPS = [
-      ['nz', 'new zealand', 'auckland', 'wellington', 'christchurch', 'hamilton', 'tauranga'],
-      ['qld', 'queensland', 'brisbane', 'berrinba', 'ipswich', 'gold coast', 'sunshine coast'],
-      ['nsw', 'new south wales', 'sydney', 'newcastle', 'wollongong', 'winston hills'],
-      ['vic', 'victoria', 'melbourne', 'geelong', 'ballarat', 'bendigo'],
-      ['wa', 'western australia', 'perth', 'fremantle'],
-      ['sa', 'south australia', 'adelaide'],
-      ['tas', 'tasmania', 'hobart', 'launceston'],
-      ['act', 'canberra', 'australian capital territory'],
-      ['nt', 'northern territory', 'darwin'],
-      ['australia', 'aus', 'qld', 'nsw', 'vic', 'wa', 'sa', 'tas', 'act', 'nt',
-       'queensland', 'new south wales', 'victoria', 'western australia', 'south australia'],
-    ];
-
-    function inSameGroup(a, b, groups) {
-      if (!a || !b) return false;
-      const na = normalize(a); const nb = normalize(b);
-      for (const g of groups) {
-        if (g.some(x => na.includes(x) || x.includes(na)) &&
-            g.some(x => nb.includes(x) || x.includes(nb))) return true;
-      }
-      return false;
-    }
-
-    function cityMatch(a, b) {
-      if (!a || !b) return false;
-      const na = normalize(a); const nb = normalize(b);
-      if (na === nb || na.includes(nb) || nb.includes(na)) return true;
-      return inSameGroup(a, b, CITY_ALIAS_GROUPS);
-    }
-
-    function stateMatch(a, b) {
-      if (!a || !b) return false;
-      const na = normalize(a); const nb = normalize(b);
-      if (na === nb || na.includes(nb) || nb.includes(na)) return true;
-      return inSameGroup(a, b, STATE_ALIAS_GROUPS);
-    }
-
-    if (!poCity && !poState) {
+    const poCity = pf.shipToCity || null;
+    const piCity = if_.consigneeCity || null;
+    if (!poCity) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
-        note: 'Destination not found on PO — verify manually.' });
+        note: 'Destination city not found on PO — verify manually.' });
       needsManual = true;
-    } else if (!piCity && !piState) {
+    } else if (!piCity) {
       checks.push({ check: 'Destination', status: 'WARNING', className: 'warn',
-        note: `PO: ${[poCity, poState].filter(Boolean).join(', ')}  |  PI: destination not stated.` });
+        note: `PO: ${poCity}  |  PI: destination not stated on PI.` });
       needsManual = true;
     } else {
-      const poAddr = [poCity, poState].filter(Boolean).join(', ');
-      const piAddr = [piCity, piState].filter(Boolean).join(', ');
-      const cityOk  = cityMatch(poCity, piCity) || cityMatch(poCity, piState) || cityMatch(poState, piCity);
-      const stateOk = stateMatch(poState, piState) || stateMatch(poCity, piState) || stateMatch(poState, piCity) || stateMatch(poCity, piCity);
-      if (cityOk || stateOk) {
-        const note = cityOk ? `PO: ${poAddr}  |  PI: ${piAddr}` : `PO: ${poAddr}  |  PI: ${piAddr} (same region)`;
-        checks.push({ check: 'Destination', status: 'PASS', className: 'pass', note });
-      } else {
-        checks.push({ check: 'Destination', status: 'FAIL', className: 'fail',
-          note: `PO: ${poAddr}  |  PI: ${piAddr}` });
-        pass = false; needsManual = true;
-      }
+      const match = normalize(poCity) === normalize(piCity);
+      checks.push({
+        check: 'Destination',
+        status: match ? 'PASS' : 'FAIL',
+        className: match ? 'pass' : 'fail',
+        note: `PO: ${poCity}  |  PI: ${piCity}`,
+      });
+      if (!match) { pass = false; needsManual = true; }
     }
   }
 
@@ -873,7 +809,7 @@ function compare(poDoc, piDoc) {
 
     let qtyIssues = 0;
 
-    for (let po of poItems) {
+    for (const po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
@@ -888,33 +824,6 @@ function compare(poDoc, piDoc) {
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
-
-      // ── Sanity checks: discard values that look like Rel# or sequence numbers ──
-      // Small qty_ea on PO (e.g. Haiku read Rel#:1 as qty_ea)
-      if (po.qty_ea != null && po.qty_ea <= 10 && (po.qty_ctn == null || po.qty_ctn > po.qty_ea)) {
-        console.warn(`[POPI] PO sanity: qty_ea=${po.qty_ea} looks like Rel# — discarding`);
-        po = { ...po, qty_ea: null };
-      }
-      // Small qty_ctn on PO (e.g. Haiku read Rel#:1 as qty_ctn, qty_ea null)
-      if (po.qty_ctn != null && po.qty_ctn <= 10 && po.qty_ea == null) {
-        console.warn(`[POPI] PO sanity: qty_ctn=${po.qty_ctn} looks like Rel# — discarding`);
-        po = { ...po, qty_ctn: null };
-      }
-      // Small qty_ea on PI
-      if (pi.qty_ea != null && pi.qty_ea <= 10 && (pi.qty_ctn == null || pi.qty_ctn > pi.qty_ea)) {
-        console.warn(`[POPI] PI sanity: qty_ea=${pi.qty_ea} looks like Rel# — discarding`);
-        pi = { ...pi, qty_ea: null };
-      }
-      // PI qty_ctn × pack_size should ≈ qty_ea when all three are present
-      const piPs = ref?.pack_size_ea || pi.pack_size;
-      if (pi.qty_ctn != null && pi.qty_ea != null && piPs && piPs > 1) {
-        const implied = pi.qty_ctn * piPs;
-        const sanityVar = Math.abs(implied - pi.qty_ea) / Math.max(implied, pi.qty_ea);
-        if (sanityVar > 0.20) {
-          console.warn(`[POPI] PI sanity: qty_ctn(${pi.qty_ctn})×pack(${piPs})=${implied} vs qty_ea=${pi.qty_ea} (${(sanityVar*100).toFixed(0)}% off) — discarding qty_ea`);
-          pi = { ...pi, qty_ea: null };
-        }
-      }
 
       let poQtyEa = null;
       let piQtyEa = null;
@@ -1023,6 +932,27 @@ function compare(poDoc, piDoc) {
             variance: `${tVar.toFixed(1)}% — within qty tolerance`,
           });
         }
+      }
+    }
+
+    // ── Flag extra PI items not on PO ─────────────────────────────────────────
+    // Any PI item whose code was never consumed by a PO match is an unexpected addition.
+    for (const piItem of piItems) {
+      const consumed = piItem.alt_codes.some(c => {
+        const idx = piCodeIdx[c] || 0;
+        const list = piCodeLists[c] || [];
+        return idx > 0; // at least one was consumed
+      });
+      if (!consumed) {
+        const code = piItem.item_code || piItem.alt_codes.find(c => c) || 'Unknown';
+        mismatches.push({
+          item: code,
+          field: 'Extra item on PI',
+          po: 'Not on PO',
+          pi: `${piItem.qty_ctn ?? piItem.qty_ea ?? '?'} ${piItem.qty_ctn != null ? 'CTN' : 'EA'} @ ${piItem.unit_price ?? '?'}`,
+          variance: '—',
+        });
+        needsManual = true;
       }
     }
 
@@ -1194,13 +1124,7 @@ async function buildSignedPdf(piFile, company, signer) {
     { text: `Date:  ${dateStr}`,         bold: false, size: 9.5 },
   ];
 
-  const BOX_W_MIN = 180; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
-
-  // Measure each line and size the box to fit the widest one
-  const lineWidths = sigLines.map(line =>
-    (line.bold ? boldFont : font).widthOfTextAtSize(line.text, line.size)
-  );
-  const BOX_W = Math.max(BOX_W_MIN, Math.max(...lineWidths) + PADDING * 2);
+  const BOX_W = 270; const LINE_H = 15; const PADDING = 10; const MARGIN = 36;
   const BOX_H = sigLines.length * LINE_H + PADDING * 2 + 4;
   const boxX  = width - BOX_W - MARGIN;
   const boxY  = MARGIN;
