@@ -1,5 +1,5 @@
 // PO 2194 PI Checker 2014 app.js v3.27
-// v3.27: Flag extra PI items not on PO; recognise Contract No. as PO number
+// v3.27: PI qty cross-check (line_total00f7price) catches dimensions misread as qty; prompt hardened against description numbers
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
@@ -546,7 +546,7 @@ const EXTRACT_PROMPT = `You are a procurement document parser. Extract structure
 Return this exact structure:
 {
   "doc_type": "PO" or "PI",
-  "po_number": "PO number from the document. On supplier PIs this may be labelled 'PO NO', 'Your Order No.', 'Order No.', 'Contract No.', 'Reference No.' or similar — check all of these. If multiple PO numbers appear (e.g. '131078/131089'), return them all separated by a forward slash. Return null if not found.",
+  "po_number": "string or null",
   "payment_terms": "string or null",
   "currency": "USD/AUD/EUR/etc or null",
   "incoterms": "FOB/CIF/etc (normalised, no dots) or null",
@@ -582,6 +582,8 @@ Notes:
 - For POs where the Unit column shows CTN/xxx (e.g. CTN/1000, CTN/500, CTN/300, CTN/4, CTN/6): set qty_ctn = the order quantity, set qty_ea = null, set pack_size_ea_per_ctn = xxx (the number after "CTN/"). Set price_basis = per_ctn. These are carton-based POs — the order quantity IS the carton count, not individual units.
 - PKT/nn or PKT/xx in item descriptions refers only to inner bag or inner pack size — this is NOT pack_size_ea_per_ctn. Always derive pack_size_ea_per_ctn from the CTN/xxx unit notation, not from PKT/nn.
 - When comparing PO and PI prices: if both documents price per carton (per_ctn), verify the prices match directly at the per-carton level. Do not divide per-carton prices by pack size.
+- IMPORTANT: A quantity value must ALWAYS come from a column explicitly labelled with a quantity header — "Qty(ct)", "Quantity", "CTNS", "CTN", "Order Qty", "PCS", "cts" etc. NEVER take a quantity from inside a product description. Descriptions frequently contain dimensions like "160 MM", "97dia", "16oz", "9x9inch", "500 / CTN", "285ML" — these are product specifications, NOT quantities. For example, in a row "WOODEN CUTLERY SPOON 160 MM ... 500 cts", the quantity is 500 (from the qty column), NOT 160 (the mm size in the description).
+- IMPORTANT: When a description spans multiple lines and includes packing notes (e.g. "Packing for 100pcs/bag, 10bags/inner carton", "SET IN PAPER WRAPPER, BULK PACK - 500 / CTN"), the true carton quantity is the number in the dedicated quantity column (often at the END of the row, followed by "cts" or "ctns"), not any number embedded in the packing note.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -825,6 +827,26 @@ function compare(poDoc, piDoc) {
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
 
+      // ── PI qty cross-check: line_total ÷ unit_price should equal qty_ctn ──────
+      // Catches cases where Haiku grabbed a dimension (e.g. "160 MM" from the
+      // description) instead of the real carton count. Only corrects when the
+      // derived value is a clean whole number and differs materially from qty_ctn.
+      if (pi.line_total != null && pi.unit_price != null && pi.unit_price > 0) {
+        const derivedCtn = pi.line_total / pi.unit_price;
+        const rounded = Math.round(derivedCtn);
+        const isClean = Math.abs(derivedCtn - rounded) / rounded < 0.02; // within 2% of whole number
+        if (isClean && rounded > 0 && pi.qty_ctn != null) {
+          const diff = Math.abs(rounded - pi.qty_ctn) / Math.max(rounded, pi.qty_ctn);
+          if (diff > 0.05) {
+            console.warn(`[POPI] PI qty cross-check: line_total(${pi.line_total})÷price(${pi.unit_price})=${rounded} but qty_ctn=${pi.qty_ctn} — correcting to ${rounded}`);
+            pi = { ...pi, qty_ctn: rounded };
+          }
+        } else if (isClean && rounded > 0 && pi.qty_ctn == null && pi.qty_ea == null) {
+          console.warn(`[POPI] PI qty cross-check: no qty extracted, derived ${rounded} from line_total÷price`);
+          pi = { ...pi, qty_ctn: rounded };
+        }
+      }
+
       let poQtyEa = null;
       let piQtyEa = null;
       let bridgeNote = '';
@@ -932,27 +954,6 @@ function compare(poDoc, piDoc) {
             variance: `${tVar.toFixed(1)}% — within qty tolerance`,
           });
         }
-      }
-    }
-
-    // ── Flag extra PI items not on PO ─────────────────────────────────────────
-    // Any PI item whose code was never consumed by a PO match is an unexpected addition.
-    for (const piItem of piItems) {
-      const consumed = piItem.alt_codes.some(c => {
-        const idx = piCodeIdx[c] || 0;
-        const list = piCodeLists[c] || [];
-        return idx > 0; // at least one was consumed
-      });
-      if (!consumed) {
-        const code = piItem.item_code || piItem.alt_codes.find(c => c) || 'Unknown';
-        mismatches.push({
-          item: code,
-          field: 'Extra item on PI',
-          po: 'Not on PO',
-          pi: `${piItem.qty_ctn ?? piItem.qty_ea ?? '?'} ${piItem.qty_ctn != null ? 'CTN' : 'EA'} @ ${piItem.unit_price ?? '?'}`,
-          variance: '—',
-        });
-        needsManual = true;
       }
     }
 
