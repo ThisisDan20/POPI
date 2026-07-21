@@ -1,5 +1,6 @@
-// PO 2194 PI Checker 2014 app.js v3.27
-// v3.27: PI qty cross-check (line_total00f7price) catches dimensions misread as qty; prompt hardened against description numbers
+// PO ↔ PI Checker — app.js v3.28
+// v3.28: Restore Rel# sanity checks (small qty_ctn/qty_ea = release number, not quantity)
+// v3.27: PI qty cross-check (line_total÷price) catches dimensions misread as qty
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
 // v3.15: Option B file rows; Step 4 greys when no manual review needed; download locked until approved
@@ -811,7 +812,7 @@ function compare(poDoc, piDoc) {
 
     let qtyIssues = 0;
 
-    for (const po of poItems) {
+    for (let po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
         const ref = refLookup(po.item_code);
@@ -826,6 +827,33 @@ function compare(poDoc, piDoc) {
 
       const ref = refLookup(po.item_code) || refLookup(pi.item_code);
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
+
+      // ── Rel# sanity checks: discard qty values that are actually release numbers ──
+      // Epicor POs show "Rel# : 1" which Haiku sometimes reads as the quantity.
+      if (po.qty_ea != null && po.qty_ea <= 10 && (po.qty_ctn == null || po.qty_ctn > po.qty_ea)) {
+        console.warn(`[POPI] PO sanity: qty_ea=${po.qty_ea} looks like Rel# — discarding`);
+        po = { ...po, qty_ea: null };
+      }
+      if (po.qty_ctn != null && po.qty_ctn <= 10 && po.qty_ea == null) {
+        console.warn(`[POPI] PO sanity: qty_ctn=${po.qty_ctn} looks like Rel# — discarding`);
+        po = { ...po, qty_ctn: null };
+      }
+      if (pi.qty_ea != null && pi.qty_ea <= 10 && (pi.qty_ctn == null || pi.qty_ctn > pi.qty_ea)) {
+        console.warn(`[POPI] PI sanity: qty_ea=${pi.qty_ea} looks like Rel# — discarding`);
+        pi = { ...pi, qty_ea: null };
+      }
+
+      // ── PO qty cross-check: if qty missing (e.g. after Rel# discard), derive from line_total ──
+      if (po.qty_ea == null && po.qty_ctn == null && po.line_total != null && po.unit_price != null && po.unit_price > 0) {
+        // per_1000 price: EA = line_total / price × 1000; per_ea: EA = line_total / price
+        const perThousand = po.price_basis === 'per_1000';
+        const derivedEa = perThousand ? (po.line_total / po.unit_price) * 1000 : (po.line_total / po.unit_price);
+        const rounded = Math.round(derivedEa);
+        if (rounded > 10) {
+          console.warn(`[POPI] PO qty cross-check: derived qty_ea=${rounded} from line_total÷price`);
+          po = { ...po, qty_ea: rounded };
+        }
+      }
 
       // ── PI qty cross-check: line_total ÷ unit_price should equal qty_ctn ──────
       // Catches cases where Haiku grabbed a dimension (e.g. "160 MM" from the
