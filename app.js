@@ -1,5 +1,6 @@
-// PO ↔ PI Checker — app.js v3.29
-// v3.29: numify() parses '350,000.00'-style numbers correctly (comma = thousands sep, not decimal)
+// PO ↔ PI Checker — app.js v3.30
+// v3.30: PO qty cross-check reconciles against PI cartons×pack_size to pick per-ea vs per-1000 basis; PI check runs first
+// v3.29: numify() parses '350,000.00'-style numbers (comma = thousands sep)
 // v3.28: Restore Rel# sanity checks + PO qty cross-check
 // v3.27: PI qty cross-check (line_total÷price) catches dimensions misread as qty
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
@@ -857,26 +858,13 @@ function compare(poDoc, piDoc) {
         pi = { ...pi, qty_ea: null };
       }
 
-      // ── PO qty cross-check: if qty missing (e.g. after Rel# discard), derive from line_total ──
-      if (po.qty_ea == null && po.qty_ctn == null && po.line_total != null && po.unit_price != null && po.unit_price > 0) {
-        // per_1000 price: EA = line_total / price × 1000; per_ea: EA = line_total / price
-        const perThousand = po.price_basis === 'per_1000';
-        const derivedEa = perThousand ? (po.line_total / po.unit_price) * 1000 : (po.line_total / po.unit_price);
-        const rounded = Math.round(derivedEa);
-        if (rounded > 10) {
-          console.warn(`[POPI] PO qty cross-check: derived qty_ea=${rounded} from line_total÷price`);
-          po = { ...po, qty_ea: rounded };
-        }
-      }
-
-      // ── PI qty cross-check: line_total ÷ unit_price should equal qty_ctn ──────
-      // Catches cases where Haiku grabbed a dimension (e.g. "160 MM" from the
-      // description) instead of the real carton count. Only corrects when the
-      // derived value is a clean whole number and differs materially from qty_ctn.
+      // ── PI qty cross-check FIRST: line_total ÷ unit_price should equal qty_ctn ──
+      // Catches dimensions (e.g. "160 MM") misread as the carton count. Running
+      // this before the PO cross-check gives the PO a reliable carton reference.
       if (pi.line_total != null && pi.unit_price != null && pi.unit_price > 0) {
         const derivedCtn = pi.line_total / pi.unit_price;
         const rounded = Math.round(derivedCtn);
-        const isClean = Math.abs(derivedCtn - rounded) / rounded < 0.02; // within 2% of whole number
+        const isClean = Math.abs(derivedCtn - rounded) / rounded < 0.02;
         if (isClean && rounded > 0 && pi.qty_ctn != null) {
           const diff = Math.abs(rounded - pi.qty_ctn) / Math.max(rounded, pi.qty_ctn);
           if (diff > 0.05) {
@@ -886,6 +874,30 @@ function compare(poDoc, piDoc) {
         } else if (isClean && rounded > 0 && pi.qty_ctn == null && pi.qty_ea == null) {
           console.warn(`[POPI] PI qty cross-check: no qty extracted, derived ${rounded} from line_total÷price`);
           pi = { ...pi, qty_ctn: rounded };
+        }
+      }
+
+      // ── PO qty cross-check: if qty missing (e.g. after Rel# discard), derive from line_total ──
+      if (po.qty_ea == null && po.qty_ctn == null && po.line_total != null && po.unit_price != null && po.unit_price > 0) {
+        const baseEa = po.line_total / po.unit_price;   // EA if price is per-ea
+        const perThousandEa = baseEa * 1000;            // EA if price is per-1000
+        const ps = ref?.pack_size_ea || pi.pack_size || po.pack_size;
+
+        // Reconcile against the (now-corrected) PI carton count:
+        // PI cartons × pack_size should equal the PO EA total.
+        let chosen = null;
+        if (ps && ps > 1 && pi.qty_ctn != null) {
+          const targetEa = pi.qty_ctn * ps;
+          const dBase = Math.abs(baseEa - targetEa);
+          const dK    = Math.abs(perThousandEa - targetEa);
+          chosen = dK <= dBase ? perThousandEa : baseEa;
+        } else {
+          chosen = (po.price_basis === 'per_1000') ? perThousandEa : baseEa;
+        }
+        const rounded = Math.round(chosen);
+        if (rounded > 10) {
+          console.warn(`[POPI] PO qty cross-check: derived qty_ea=${rounded} (baseEa=${Math.round(baseEa)}, per1000=${Math.round(perThousandEa)})`);
+          po = { ...po, qty_ea: rounded };
         }
       }
 
