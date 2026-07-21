@@ -1,5 +1,6 @@
-// PO ↔ PI Checker — app.js v3.28
-// v3.28: Restore Rel# sanity checks (small qty_ctn/qty_ea = release number, not quantity)
+// PO ↔ PI Checker — app.js v3.29
+// v3.29: numify() parses '350,000.00'-style numbers correctly (comma = thousands sep, not decimal)
+// v3.28: Restore Rel# sanity checks + PO qty cross-check
 // v3.27: PI qty cross-check (line_total÷price) catches dimensions misread as qty
 // v3.17: Step 5 greys until approved; Run Comparison fades until PO+PI both selected
 // v3.16: Prompt fix — pack_size total pieces per carton; qty_ea from explicit PCS column
@@ -517,6 +518,18 @@ function normalizePoNo(s) {
   return String(s || '').replace(/[^0-9]/g, '');
 }
 
+// Parse a numeric value that may arrive as a number or a string with thousands
+// separators (e.g. "350,000.00" → 350000). Returns null if not parseable.
+function numify(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  // String: remove thousands commas but keep the decimal point
+  const cleaned = String(v).replace(/,/g, '').replace(/[^0-9.\-]/g, '').trim();
+  if (cleaned === '' || cleaned === '.' || cleaned === '-') return null;
+  const n = parseFloat(cleaned);
+  return isFinite(n) ? n : null;
+}
+
 async function readBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -585,6 +598,7 @@ Notes:
 - When comparing PO and PI prices: if both documents price per carton (per_ctn), verify the prices match directly at the per-carton level. Do not divide per-carton prices by pack size.
 - IMPORTANT: A quantity value must ALWAYS come from a column explicitly labelled with a quantity header — "Qty(ct)", "Quantity", "CTNS", "CTN", "Order Qty", "PCS", "cts" etc. NEVER take a quantity from inside a product description. Descriptions frequently contain dimensions like "160 MM", "97dia", "16oz", "9x9inch", "500 / CTN", "285ML" — these are product specifications, NOT quantities. For example, in a row "WOODEN CUTLERY SPOON 160 MM ... 500 cts", the quantity is 500 (from the qty column), NOT 160 (the mm size in the description).
 - IMPORTANT: When a description spans multiple lines and includes packing notes (e.g. "Packing for 100pcs/bag, 10bags/inner carton", "SET IN PAPER WRAPPER, BULK PACK - 500 / CTN"), the true carton quantity is the number in the dedicated quantity column (often at the END of the row, followed by "cts" or "ctns"), not any number embedded in the packing note.
+- IMPORTANT: Numeric values like quantities, prices and totals often use commas as thousands separators (e.g. "350,000.00" means three hundred fifty thousand, NOT 350). Always return the FULL numeric value. "350,000.00" must be returned as 350000, never as 350. "1,500,000.00" is 1500000. Do not treat the comma as a decimal point.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -663,7 +677,7 @@ async function extractWithClaude(file) {
       payTerms:      parsed.payment_terms || null,
       currency:      parsed.currency || null,
       incoterms:     parsed.incoterms || null,
-      totalCost:     parsed.total_cost ? String(parsed.total_cost).replace(/,/g, '') : null,
+      totalCost:     parsed.total_cost != null ? String(numify(parsed.total_cost) ?? '') || null : null,
       shipToCity:    parsed.ship_to_city   || null,
       consigneeName: parsed.consignee_name || null,
       consigneeCity: parsed.consignee_city || null,
@@ -672,12 +686,12 @@ async function extractWithClaude(file) {
       our_code:      (it.our_code || '').toUpperCase() || null,
       supplier_code: (it.supplier_code || '').toUpperCase() || null,
       description:   it.description || '',
-      qty_ea:        it.qty_ea ?? null,
-      qty_ctn:       it.qty_ctn ?? null,
-      pack_size:     it.pack_size_ea_per_ctn ?? null,
-      unit_price:    it.unit_price ?? null,
+      qty_ea:        numify(it.qty_ea),
+      qty_ctn:       numify(it.qty_ctn),
+      pack_size:     numify(it.pack_size_ea_per_ctn),
+      unit_price:    numify(it.unit_price),
       price_basis:   it.price_basis || null,
-      line_total:    it.line_total ?? null,
+      line_total:    numify(it.line_total),
       item_code: (it.our_code || it.supplier_code || '').toUpperCase().replace(/\s*\/.*$/, '').trim(),
       alt_codes: [it.our_code, it.supplier_code]
         .filter(Boolean)
