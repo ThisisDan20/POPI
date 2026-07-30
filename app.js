@@ -1,5 +1,6 @@
-// PO ↔ PI Checker — app.js v3.30
-// v3.30: PO qty cross-check reconciles against PI cartons×pack_size to pick per-ea vs per-1000 basis; PI check runs first
+// PO ↔ PI Checker — app.js v3.31
+// v3.31: Match on all three PO codes (PartNum + Supplier Part Num + Our Part Number); ref lookup tries every code
+// v3.30: PO qty cross-check reconciles against PI cartons×pack_size; PI check runs first
 // v3.29: numify() parses '350,000.00'-style numbers (comma = thousands sep)
 // v3.28: Restore Rel# sanity checks + PO qty cross-check
 // v3.27: PI qty cross-check (line_total÷price) catches dimensions misread as qty
@@ -571,8 +572,9 @@ Return this exact structure:
   "consignee_city": "city from consignee or delivery address on PI (e.g. Auckland, Sydney) or null",
   "line_items": [
     {
-      "our_code": "buyer item code e.g. H100219 or null",
-      "supplier_code": "supplier item code e.g. HL-B02 or null",
+      "part_num": "the main PartNum shown in the line header column e.g. FI-PFC8PLA, WCSPNIW, 402001080173-0004 — this is the FIRST code on the line, or null",
+      "our_code": "the code labelled 'Our Part Number' on the PO, or the buyer/customer item code on a PI e.g. H100219, FC8P — or null",
+      "supplier_code": "the code labelled 'Supplier Part Num' on the PO, or the supplier's own item code on a PI e.g. HL-B02, FCPLALXS — or null",
       "description": "item description",
       "qty_ea": number or null,
       "qty_ctn": number or null,
@@ -600,6 +602,11 @@ Notes:
 - IMPORTANT: A quantity value must ALWAYS come from a column explicitly labelled with a quantity header — "Qty(ct)", "Quantity", "CTNS", "CTN", "Order Qty", "PCS", "cts" etc. NEVER take a quantity from inside a product description. Descriptions frequently contain dimensions like "160 MM", "97dia", "16oz", "9x9inch", "500 / CTN", "285ML" — these are product specifications, NOT quantities. For example, in a row "WOODEN CUTLERY SPOON 160 MM ... 500 cts", the quantity is 500 (from the qty column), NOT 160 (the mm size in the description).
 - IMPORTANT: When a description spans multiple lines and includes packing notes (e.g. "Packing for 100pcs/bag, 10bags/inner carton", "SET IN PAPER WRAPPER, BULK PACK - 500 / CTN"), the true carton quantity is the number in the dedicated quantity column (often at the END of the row, followed by "cts" or "ctns"), not any number embedded in the packing note.
 - IMPORTANT: Numeric values like quantities, prices and totals often use commas as thousands separators (e.g. "350,000.00" means three hundred fifty thousand, NOT 350). Always return the FULL numeric value. "350,000.00" must be returned as 350000, never as 350. "1,500,000.00" is 1500000. Do not treat the comma as a decimal point.
+- IMPORTANT: Epicor PO lines carry up to THREE separate item codes and you must capture all of them:
+  1. "PartNum" — the code in the line header row, immediately after the line number (e.g. "2 FI-PFC8PLA")
+  2. "Supplier Part Num:" — a labelled field below the description (e.g. "Supplier Part Num: FC8P")
+  3. "Our Part Number" — another labelled field below that (e.g. "Our Part Number FC8P")
+  These are often all different. The supplier's PI usually references #2 or #3, not #1, so never omit them. If a label appears with no value after it, return null for that field only.
 - Return null for any field you cannot find — do not guess`;
 
 // ─── PDF text extraction (client-side) ───────────────────────────────────────
@@ -684,6 +691,7 @@ async function extractWithClaude(file) {
       consigneeCity: parsed.consignee_city || null,
     },
     items: (parsed.line_items || []).map(it => ({
+      part_num:      (it.part_num || '').toUpperCase() || null,
       our_code:      (it.our_code || '').toUpperCase() || null,
       supplier_code: (it.supplier_code || '').toUpperCase() || null,
       description:   it.description || '',
@@ -693,8 +701,9 @@ async function extractWithClaude(file) {
       unit_price:    numify(it.unit_price),
       price_basis:   it.price_basis || null,
       line_total:    numify(it.line_total),
-      item_code: (it.our_code || it.supplier_code || '').toUpperCase().replace(/\s*\/.*$/, '').trim(),
-      alt_codes: [it.our_code, it.supplier_code]
+      item_code: (it.our_code || it.supplier_code || it.part_num || '').toUpperCase().replace(/\s*\/.*$/, '').trim(),
+      // All three codes go into the matching pool — the PI may reference any of them
+      alt_codes: [it.our_code, it.supplier_code, it.part_num]
         .filter(Boolean)
         .map(c => c.toUpperCase().replace(/\s*\/.*$/, '').trim())
         .filter((c, i, a) => c && a.indexOf(c) === i),
@@ -830,8 +839,15 @@ function compare(poDoc, piDoc) {
     for (let po of poItems) {
       let pi = nextPiMatch(po.alt_codes);
       if (!pi) {
-        const ref = refLookup(po.item_code);
-        if (ref) { pi = nextPiMatch([ref.supplier_code, ref.our_code].filter(Boolean)); }
+        // Fallback: any of the PO's codes may be in the reference dataset —
+        // try each one, then match the PI on that entry's paired codes.
+        for (const c of po.alt_codes) {
+          const ref = refLookup(c);
+          if (ref) {
+            pi = nextPiMatch([ref.supplier_code, ref.our_code].filter(Boolean));
+            if (pi) break;
+          }
+        }
       }
 
       if (!pi) {
@@ -840,7 +856,12 @@ function compare(poDoc, piDoc) {
         continue;
       }
 
-      const ref = refLookup(po.item_code) || refLookup(pi.item_code);
+      // Find pack_size ref by trying every code we know for this line, both sides
+      let ref = null;
+      for (const c of [...po.alt_codes, ...pi.alt_codes]) {
+        ref = refLookup(c);
+        if (ref) break;
+      }
       console.log('[POPI] ref lookup for', po.item_code, '→', ref ? 'FOUND pack_size=' + ref.pack_size_ea : 'NOT FOUND');
 
       // ── Rel# sanity checks: discard qty values that are actually release numbers ──
@@ -1538,6 +1559,7 @@ window.debugDocs = () => {
     const ps = poIt.pack_size || piIt.pack_size || snapPs;
 
     console.log(poIt.item_code, {
+      po_codes: poIt.alt_codes, pi_codes: piIt.alt_codes,
       po_price_basis: poIt.price_basis,
       po_qty_ea: poIt.qty_ea, po_qty_ctn: poIt.qty_ctn, po_pack_size: poIt.pack_size,
       pi_qty_ea: piIt.qty_ea, pi_qty_ctn: piIt.qty_ctn, pi_pack_size: piIt.pack_size,
